@@ -72,6 +72,7 @@ public class JavaOS {
     // Boot animation
     private int bootTick;
     private static final int BOOT_DURATION = 40; // 2 seconds
+    private boolean rebooting;
 
     public JavaOS(UUID computerId) {
         this.computerId = computerId;
@@ -87,6 +88,7 @@ public class JavaOS {
         this.tickCount = 0;
         this.state = State.BOOT;
         this.bootTick = 0;
+        this.rebooting = false;
 
         installSystemPrograms();
     }
@@ -523,6 +525,7 @@ public class JavaOS {
         }
         if (bootTick >= BOOT_DURATION) {
             state = State.RUNNING;
+            rebooting = false;
             terminal.setTextColor(0);
             terminal.setBackgroundColor(15);
             terminal.clear();
@@ -748,6 +751,7 @@ public class JavaOS {
         prevWorldHour = -1;
         tickCount = 0;
         bootTick = 0;
+        rebooting = true;
         state = State.BOOT;
     }
 
@@ -823,6 +827,11 @@ public class JavaOS {
 
     public boolean isRunning() { return state == State.RUNNING; }
     public boolean isBooting() { return state == State.BOOT; }
+    public boolean isRebooting() { return rebooting; }
+    public int getBootSecondsRemaining() {
+        int ticksLeft = Math.max(0, BOOT_DURATION - bootTick);
+        return (ticksLeft + 19) / 20;
+    }
     public boolean isShutdown() { return state == State.SHUTDOWN; }
 
     /**

@@ -39,6 +39,7 @@ public class ComputerScreen extends Screen {
     private boolean dragging, resizing;
     private double dragOffX, dragOffY;
     private float userScale;
+    private int clipboardSyncTicks;
 
     public ComputerScreen(JavaOS os) {
         super(Component.literal("ByteBlock Computer"));
@@ -147,6 +148,16 @@ public class ComputerScreen extends Screen {
             }
         }
 
+        // Reboot UX: explicit black screen + short countdown so reboot feedback is visible.
+        if (os.isBooting() && os.isRebooting()) {
+            gfx.fill(termX, termY, termX + renderW, termY + renderH, 0xFF000000);
+            int seconds = os.getBootSecondsRemaining();
+            String msg = "Rebooting" + (seconds > 0 ? " in " + seconds + "..." : "...");
+            int tx = termX + (renderW - this.font.width(msg)) / 2;
+            int ty = termY + (renderH / 2) - 4;
+            gfx.drawString(this.font, msg, tx, ty, 0xFFDDDDDD, false);
+        }
+
         // --- Resize grip ---
         int gs = Math.max(6, Math.round(5 * scale));
         int gx = termX + renderW + border;
@@ -158,6 +169,13 @@ public class ComputerScreen extends Screen {
         String clipOut = os.consumeClipboard();
         if (clipOut != null && minecraft != null) {
             minecraft.keyboardHandler.setClipboard(clipOut);
+        }
+        if (clipboardSyncTicks > 0 && minecraft != null) {
+            clipboardSyncTicks--;
+            String clip = os.getClipboard();
+            if (clip != null && !clip.isEmpty()) {
+                minecraft.keyboardHandler.setClipboard(clip);
+            }
         }
     }
 
@@ -223,6 +241,12 @@ public class ComputerScreen extends Screen {
             if (clipboard != null && !clipboard.isEmpty()) {
                 os.pushEvent(new OSEvent(OSEvent.Type.PASTE, clipboard));
             }
+            return true;
+        }
+        if ((keyCode == 67 || keyCode == 88) && (modifiers & 2) != 0) { // Ctrl+C / Ctrl+X
+            os.pushEvent(new OSEvent(OSEvent.Type.KEY, keyCode, 0, modifiers));
+            // Let the program handle copy/cut first, then mirror OS clipboard to system clipboard.
+            clipboardSyncTicks = 3;
             return true;
         }
         // Escape is forwarded to the OS so programs can handle it (e.g., dismiss dialogs,

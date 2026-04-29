@@ -2974,6 +2974,25 @@ public class LuaRuntime {
                     }
                     matches.add(tbl);
                 }
+                // Also scan Bluetooth MONITOR devices in range so that
+                // peripheral.find("monitor", function(_, m) return m.getLabel() == "main" end)
+                // works for wirelessly-connected ByteBlock monitors.
+                if ("monitor".equals(wantedType)) {
+                    var btDevs = BluetoothNetwork.getDevicesInRange(lvl, pos, BluetoothNetwork.BLOCK_RANGE);
+                    for (var d : btDevs) {
+                        if (d.type() != BluetoothNetwork.DeviceType.MONITOR) continue;
+                        net.minecraft.world.level.block.entity.BlockEntity monBe = lvl.getBlockEntity(d.pos());
+                        if (!(monBe instanceof com.apocscode.byteblock.block.entity.MonitorBlockEntity)) continue;
+                        var monAdapter = new com.apocscode.byteblock.computer.peripheral.MonitorPeripheralAdapter();
+                        LuaTable tbl = monAdapter.buildTable(monBe);
+                        String btName = "monitor_" + d.deviceId().toString().substring(0, 8);
+                        if (filter.isfunction()) {
+                            LuaValue keep = filter.call(LuaValue.valueOf(btName), tbl);
+                            if (!keep.toboolean()) continue;
+                        }
+                        matches.add(tbl);
+                    }
+                }
                 if (matches.isEmpty()) return NONE;
                 return LuaValue.varargsOf(matches.toArray(new LuaValue[0]));
             }
