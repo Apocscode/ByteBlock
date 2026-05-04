@@ -54,6 +54,10 @@ public class PrinterBlockEntity extends BlockEntity implements MenuProvider {
         return container;
     }
 
+    public UUID getDeviceId() { return deviceId; }
+
+    public int getQueueSize() { return printQueue.size(); }
+
     /**
      * Queue a print job (called by computer programs).
      */

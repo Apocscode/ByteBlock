@@ -131,8 +131,12 @@ public class ChargingStationBlockEntity extends BlockEntity implements net.minec
     }
 
     public EnergyStorage getEnergyStorage() { return energyStorage; }
+    public java.util.UUID getDeviceId() { return deviceId; }
     public int getEnergyStored() { return energyStorage.getEnergyStored(); }
     public int getMaxEnergy() { return MAX_ENERGY; }
+    public int getChargeRate() { return CHARGE_RATE; }
+    public double getRangeBlocks() { return RANGE; }
+    public int getFuelPerFe() { return FUEL_PER_FE; }
 
     @Override
     public net.minecraft.network.chat.Component getDisplayName() {

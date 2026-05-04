@@ -115,6 +115,9 @@ public class LuaShellProgram extends OSProgram {
             case PASTE         -> lua.queueEvent("paste", event.getString(0));
             case TERMINATE     -> lua.queueEvent("terminate");
             case TASK_COMPLETE -> lua.queueEvent("task_complete", event.getInt(0));
+            case PERIPHERAL_ONLINE  -> lua.queueEvent("peripheral_online",  event.getString(0), event.getString(1));
+            case PERIPHERAL_OFFLINE -> lua.queueEvent("peripheral_offline", event.getString(0), event.getString(1));
+            case PERIPHERAL_ALERT   -> lua.queueEvent("peripheral_alert",   event.getString(0), event.getString(1), event.getInt(2));
             default            -> {}
         }
         needsRedraw = true;

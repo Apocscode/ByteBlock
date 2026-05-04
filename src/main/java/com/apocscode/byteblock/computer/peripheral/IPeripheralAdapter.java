@@ -18,6 +18,32 @@ public interface IPeripheralAdapter {
     /** Returns the peripheral type string for this block entity. */
     String getType(BlockEntity be);
 
+    /**
+     * Returns all type tags exposed by this peripheral. The primary type should
+     * be included in the returned list.
+     */
+    default java.util.List<String> getTypes(BlockEntity be) {
+        return java.util.List.of(getType(be));
+    }
+
+    /**
+     * Returns capability tags used by the universal peripheral layer.
+     * Defaults to the same set as {@link #getTypes(BlockEntity)}.
+     */
+    default java.util.List<String> getCapabilities(BlockEntity be) {
+        return getTypes(be);
+    }
+
+    /** Optional human-readable label, or null when unsupported. */
+    default String getLabel(BlockEntity be) {
+        return null;
+    }
+
+    /** Optional stable identifier, or null when unsupported. */
+    default String getStableId(BlockEntity be) {
+        return null;
+    }
+
     /** Returns true if this adapter can handle the given block entity. */
     boolean canAdapt(BlockEntity be);
 

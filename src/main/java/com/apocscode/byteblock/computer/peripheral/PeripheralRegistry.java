@@ -42,6 +42,12 @@ public class PeripheralRegistry {
 
         // ByteBlock built-ins
         register(new MonitorPeripheralAdapter());
+        register(new ByteChestPeripheralAdapter());
+        register(new ChargingStationPeripheralAdapter());
+        register(new DrivePeripheralAdapter());
+        register(new PrinterPeripheralAdapter());
+        register(new RedstoneRelayPeripheralAdapter());
+        register(new ScannerPeripheralAdapter());
 
         if (ModList.get().isLoaded("logiclink")) {
             register(new LogicLinkPeripheralAdapter());

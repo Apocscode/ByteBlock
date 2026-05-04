@@ -126,6 +126,16 @@ public class AE2PeripheralAdapter implements IPeripheralAdapter {
     @Override public String getModId() { return "ae2"; }
 
     @Override
+    public java.util.List<String> getTypes(BlockEntity be) {
+        return java.util.List.of("me_network", "storage", "crafting");
+    }
+
+    @Override
+    public java.util.List<String> getCapabilities(BlockEntity be) {
+        return java.util.List.of("me_storage", "me_crafting", "me_energy", "storage", "wireless");
+    }
+
+    @Override
     public boolean canAdapt(BlockEntity be) {
         if (!ensureCache()) return false;
         return clsGridNodeHost != null && clsGridNodeHost.isInstance(be);
@@ -659,6 +669,58 @@ public class AE2PeripheralAdapter implements IPeripheralAdapter {
                         if (mIsNetworkPowered != null)
                             info.set("powered", LuaValue.valueOf((boolean) mIsNetworkPowered.invoke(eng)));
                     }
+                } catch (Exception ignored) {}
+                return info;
+            }
+        });
+
+        // ── listFiltered(filter) → same as list() but only items whose name ─
+        // contains the filter string (case-insensitive).
+        t.set("listFiltered", new OneArgFunction() {
+            @Override public LuaValue call(LuaValue filterV) {
+                LuaTable result = new LuaTable();
+                String filter = filterV.isnil() ? "" : filterV.tojstring().toLowerCase();
+                try {
+                    Object grid = getGrid(be);
+                    if (grid == null) return result;
+                    Map<Object, Long> stacks = getStacksMap(grid);
+                    Object craftSvc = safeGetService(grid, mGetCraftingService);
+                    int i = 1;
+                    for (Map.Entry<Object, Long> e : stacks.entrySet()) {
+                        if (!clsAEItemKey.isInstance(e.getKey())) continue;
+                        Item item = (Item) mAEItemGetItem.invoke(e.getKey());
+                        if (item == null) continue;
+                        String itemName = BuiltInRegistries.ITEM.getKey(item).toString();
+                        if (!filter.isEmpty() && !itemName.toLowerCase().contains(filter)) continue;
+                        long count = e.getValue();
+                        LuaTable entry = new LuaTable();
+                        entry.set("name",        LuaValue.valueOf(itemName));
+                        entry.set("count",       LuaValue.valueOf(count));
+                        entry.set("displayName", LuaValue.valueOf(new ItemStack(item).getHoverName().getString()));
+                        entry.set("isCraftable", LuaValue.valueOf(isCraftableKey(craftSvc, e.getKey())));
+                        result.set(i++, entry);
+                    }
+                } catch (Exception ignored) {}
+                return result;
+            }
+        });
+
+        // ── getStorageInfo() → {itemCount, itemTypes, fluidTypes, totalItems} ─
+        t.set("getStorageInfo", new ZeroArgFunction() {
+            @Override public LuaValue call() {
+                LuaTable info = new LuaTable();
+                try {
+                    Object grid = getGrid(be);
+                    if (grid == null) return info;
+                    Map<Object, Long> stacks = getStacksMap(grid);
+                    long totalItems = 0; int itemTypes = 0; int fluidTypes = 0;
+                    for (Map.Entry<Object, Long> e : stacks.entrySet()) {
+                        if (clsAEItemKey.isInstance(e.getKey())) { totalItems += e.getValue(); itemTypes++; }
+                        else if (clsAEFluidKey.isInstance(e.getKey())) { fluidTypes++; }
+                    }
+                    info.set("totalItems", LuaValue.valueOf(totalItems));
+                    info.set("itemTypes",  LuaValue.valueOf(itemTypes));
+                    info.set("fluidTypes", LuaValue.valueOf(fluidTypes));
                 } catch (Exception ignored) {}
                 return info;
             }

@@ -36,6 +36,31 @@ public class MonitorPeripheralAdapter implements IPeripheralAdapter {
     public String getType(BlockEntity be) { return "monitor"; }
 
     @Override
+    public java.util.List<String> getTypes(BlockEntity be) {
+        return java.util.List.of("monitor", "display", "peripheral");
+    }
+
+    @Override
+    public java.util.List<String> getCapabilities(BlockEntity be) {
+        return java.util.List.of("monitor", "display", "text", "graphics", "wireless");
+    }
+
+    @Override
+    public String getLabel(BlockEntity be) {
+        MonitorBlockEntity raw = (MonitorBlockEntity) be;
+        MonitorBlockEntity origin = raw.getOriginEntity() != null ? raw.getOriginEntity() : raw;
+        String label = origin.getLabel();
+        return label == null || label.isBlank() ? null : label;
+    }
+
+    @Override
+    public String getStableId(BlockEntity be) {
+        MonitorBlockEntity raw = (MonitorBlockEntity) be;
+        MonitorBlockEntity origin = raw.getOriginEntity() != null ? raw.getOriginEntity() : raw;
+        return origin.getDeviceId().toString();
+    }
+
+    @Override
     public LuaTable buildTable(BlockEntity be) {
         return buildTable(be, null);
     }

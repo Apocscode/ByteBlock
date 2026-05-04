@@ -91,6 +91,16 @@ public class CreatePeripheralAdapter implements IPeripheralAdapter {
     @Override public String getModId() { return "create"; }
 
     @Override
+    public java.util.List<String> getTypes(BlockEntity be) {
+        return java.util.List.of("create_machine", "kinetic");
+    }
+
+    @Override
+    public java.util.List<String> getCapabilities(BlockEntity be) {
+        return java.util.List.of("kinetics", "fluid", "rotation", "stress");
+    }
+
+    @Override
     public boolean canAdapt(BlockEntity be) {
         if (!ensureCache()) return false;
         return isAnyCreateBE(be);

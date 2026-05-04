@@ -55,6 +55,16 @@ public class MekanismPeripheralAdapter implements IPeripheralAdapter {
     @Override public String getModId() { return "mekanism"; }
 
     @Override
+    public java.util.List<String> getTypes(BlockEntity be) {
+        return java.util.List.of("mekanism_machine", "machine");
+    }
+
+    @Override
+    public java.util.List<String> getCapabilities(BlockEntity be) {
+        return java.util.List.of("energy", "fluid", "inventory", "chemical", "machine");
+    }
+
+    @Override
     public boolean canAdapt(BlockEntity be) {
         String cls = be.getClass().getName();
         return cls.startsWith("mekanism.")

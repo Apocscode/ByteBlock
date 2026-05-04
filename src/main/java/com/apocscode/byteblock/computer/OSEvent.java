@@ -28,7 +28,11 @@ public class OSEvent {
         SHUTDOWN,       // OS shutdown
         REBOOT,         // OS reboot
         PASTE,          // clipboard paste: data[0]=text
-        TASK_COMPLETE   // background task finished: data[0]=taskId
+        TASK_COMPLETE,  // background task finished: data[0]=taskId
+        // Peripheral lifecycle events
+        PERIPHERAL_ONLINE,  // device appeared: data[0]=name, data[1]=type
+        PERIPHERAL_OFFLINE, // device disappeared: data[0]=name, data[1]=type
+        PERIPHERAL_ALERT    // device alert (low fuel/energy/full): data[0]=name, data[1]=alertType, data[2]=value
     }
 
     private final Type type;

@@ -3,9 +3,11 @@
 ## Unreleased
 
 ### Added
+
 - Puzzle IDE deployment options for BT-only, disk-only, or both.
 - Bluetooth deploy ACK flow for robot/drone upload handlers.
 - Session-level project log file (`SESSION_LOG.md`) for chronological tracking.
+- Universal peripheral specification document covering unified API shape, event model, and popular-mod compatibility targets.
 
 ### Changed
 - README now states ATM10 as the primary integration test target.

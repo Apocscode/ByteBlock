@@ -2872,6 +2872,19 @@ public class LuaRuntime {
     private void installPeripheralAPI() {
         LuaTable peripheral = new LuaTable();
 
+        peripheral.set("list", new ZeroArgFunction() {
+            @Override
+            public LuaValue call() {
+                LuaTable result = new LuaTable();
+                for (LuaTable tbl : listPeripheralTables()) {
+                    String name = metadataString(tbl, "__name", null);
+                    if (name == null || name.isBlank()) continue;
+                    result.set(name, peripheralStatusTable(tbl));
+                }
+                return result;
+            }
+        });
+
         // All side-based peripheral.* calls (isPresent/getType/getMethods/
         // wrap/call) read from JavaOS.peripheralSnapshot rather than calling
         // Level.getBlockEntity, since they may be invoked from a Lua coroutine
@@ -2881,41 +2894,39 @@ public class LuaRuntime {
         // peripheral.isPresent(side) → boolean
         peripheral.set("isPresent", new OneArgFunction() {
             @Override
-            public LuaValue call(LuaValue side) {
-                net.minecraft.core.BlockPos pos = os.getBlockPos();
-                if (pos == null) return LuaValue.FALSE;
-                net.minecraft.core.Direction dir = com.apocscode.byteblock.computer.peripheral
-                        .PeripheralRegistry.sideToDirection(side.checkjstring());
-                if (dir == null) return LuaValue.FALSE;
-                return LuaValue.valueOf(os.getPeripheralTypeCache().containsKey(pos.relative(dir)));
+            public LuaValue call(LuaValue ref) {
+                return LuaValue.valueOf(resolvePeripheralTable(ref) != null);
             }
         });
 
         // peripheral.getType(side) → string | nil
         peripheral.set("getType", new OneArgFunction() {
             @Override
-            public LuaValue call(LuaValue side) {
-                net.minecraft.core.BlockPos pos = os.getBlockPos();
-                if (pos == null) return LuaValue.NIL;
-                net.minecraft.core.Direction dir = com.apocscode.byteblock.computer.peripheral
-                        .PeripheralRegistry.sideToDirection(side.checkjstring());
-                if (dir == null) return LuaValue.NIL;
-                String type = os.getPeripheralTypeCache().get(pos.relative(dir));
+            public LuaValue call(LuaValue ref) {
+                LuaTable tbl = resolvePeripheralTable(ref);
+                if (tbl == null) return LuaValue.NIL;
+                String type = metadataString(tbl, "__type", null);
                 return type != null ? LuaValue.valueOf(type) : LuaValue.NIL;
+            }
+        });
+
+        peripheral.set("hasType", new TwoArgFunction() {
+            @Override
+            public LuaValue call(LuaValue ref, LuaValue wanted) {
+                LuaTable tbl = resolvePeripheralTable(ref);
+                if (tbl == null) return LuaValue.FALSE;
+                String target = wanted.checkjstring();
+                return LuaValue.valueOf(metadataArrayContains(tbl, "__types", target)
+                        || target.equals(metadataString(tbl, "__type", "")));
             }
         });
 
         // peripheral.getMethods(side) → table of method name strings
         peripheral.set("getMethods", new OneArgFunction() {
             @Override
-            public LuaValue call(LuaValue side) {
-                net.minecraft.core.BlockPos pos = os.getBlockPos();
+            public LuaValue call(LuaValue ref) {
                 LuaTable methods = new LuaTable();
-                if (pos == null) return methods;
-                net.minecraft.core.Direction dir = com.apocscode.byteblock.computer.peripheral
-                        .PeripheralRegistry.sideToDirection(side.checkjstring());
-                if (dir == null) return methods;
-                org.luaj.vm2.LuaTable tbl = os.getPeripheralTableCache().get(pos.relative(dir));
+                org.luaj.vm2.LuaTable tbl = resolvePeripheralTable(ref);
                 if (tbl == null) return methods;
                 int i = 1;
                 for (org.luaj.vm2.LuaValue key = tbl.next(LuaValue.NIL).arg1();
@@ -2929,16 +2940,13 @@ public class LuaRuntime {
             }
         });
 
+        peripheral.set("methods", peripheral.get("getMethods"));
+
         // peripheral.wrap(side) → method table | nil
         peripheral.set("wrap", new OneArgFunction() {
             @Override
-            public LuaValue call(LuaValue side) {
-                net.minecraft.core.BlockPos pos = os.getBlockPos();
-                if (pos == null) return LuaValue.NIL;
-                net.minecraft.core.Direction dir = com.apocscode.byteblock.computer.peripheral
-                        .PeripheralRegistry.sideToDirection(side.checkjstring());
-                if (dir == null) return LuaValue.NIL;
-                org.luaj.vm2.LuaTable tbl = os.getPeripheralTableCache().get(pos.relative(dir));
+            public LuaValue call(LuaValue ref) {
+                org.luaj.vm2.LuaTable tbl = resolvePeripheralTable(ref);
                 return tbl != null ? tbl : LuaValue.NIL;
             }
         });
@@ -2947,12 +2955,7 @@ public class LuaRuntime {
         peripheral.set("call", new VarArgFunction() {
             @Override
             public Varargs invoke(Varargs args) {
-                net.minecraft.core.BlockPos pos = os.getBlockPos();
-                if (pos == null) return LuaValue.NIL;
-                net.minecraft.core.Direction dir = com.apocscode.byteblock.computer.peripheral
-                        .PeripheralRegistry.sideToDirection(args.checkjstring(1));
-                if (dir == null) return LuaValue.NIL;
-                org.luaj.vm2.LuaTable tbl = os.getPeripheralTableCache().get(pos.relative(dir));
+                org.luaj.vm2.LuaTable tbl = resolvePeripheralTable(args.arg(1));
                 if (tbl == null) return LuaValue.NIL;
                 LuaValue fn = tbl.get(args.checkjstring(2));
                 if (fn.isnil() || !fn.isfunction()) return LuaValue.NIL;
@@ -2972,105 +2975,74 @@ public class LuaRuntime {
             public Varargs invoke(Varargs args) {
                 String wantedType = args.checkjstring(1);
                 LuaValue filter = args.arg(2);
-                net.minecraft.world.level.Level lvl = os.getLevel();
-                net.minecraft.core.BlockPos pos = os.getBlockPos();
-                if (lvl == null || pos == null) return NONE;
                 java.util.List<LuaValue> matches = new java.util.ArrayList<>();
-                java.util.Set<net.minecraft.core.BlockPos> seen = new java.util.HashSet<>();
-
-                // CRITICAL: this code runs on a Lua coroutine thread, NOT the
-                // server thread. We MUST NOT call lvl.getBlockEntity(...) /
-                // lvl.getChunk(...) / ServerChunkCache.getChunkNow(...) here —
-                // they can block via CompletableFuture.join on the main thread,
-                // which is itself waiting for this coroutine to yield. That
-                // froze the integrated server for 295+ seconds (see logs).
-                //
-                // Instead, ALL lookups (including the 6 adjacent sides) go
-                // through JavaOS.peripheralSnapshot, which is refreshed on the
-                // server thread immediately before each os.tick() — see
-                // ComputerBlockEntity.serverTick(). Adjacent blocks are within
-                // BluetoothNetwork.BLOCK_RANGE (15) so they are guaranteed to
-                // be present whenever they exist on a loaded chunk.
-                java.util.Map<net.minecraft.core.BlockPos,
-                        net.minecraft.world.level.block.entity.BlockEntity> snap =
-                        os.getPeripheralSnapshot();
-                java.util.Map<net.minecraft.core.BlockPos, String> typeCache =
-                        os.getPeripheralTypeCache();
-                java.util.Map<net.minecraft.core.BlockPos, org.luaj.vm2.LuaTable> tableCache =
-                        os.getPeripheralTableCache();
-
-                int r = BluetoothNetwork.BLOCK_RANGE;
-                int x0 = pos.getX() - r, x1 = pos.getX() + r;
-                int y0 = Math.max(lvl.getMinBuildHeight(), pos.getY() - r);
-                int y1 = Math.min(lvl.getMaxBuildHeight() - 1, pos.getY() + r);
-                int z0 = pos.getZ() - r, z1 = pos.getZ() + r;
-                for (var entry : snap.entrySet()) {
-                    net.minecraft.core.BlockPos bp = entry.getKey();
-                    if (bp.equals(pos)) continue;
-                    if (bp.getX() < x0 || bp.getX() > x1) continue;
-                    if (bp.getY() < y0 || bp.getY() > y1) continue;
-                    if (bp.getZ() < z0 || bp.getZ() > z1) continue;
-                    String type = typeCache.get(bp);
-                    if (!wantedType.equals(type)) continue;
-                    LuaTable tbl = tableCache.get(bp);
-                    if (tbl == null) continue;
+                for (LuaTable tbl : listPeripheralTables()) {
+                    if (!metadataArrayContains(tbl, "__types", wantedType)
+                            && !wantedType.equals(metadataString(tbl, "__type", ""))) {
+                        continue;
+                    }
                     if (filter.isfunction()) {
-                        String name = type + "_" + bp.getX() + "_" + bp.getY() + "_" + bp.getZ();
+                        String name = metadataString(tbl, "__name", "unknown");
                         LuaValue keep = filter.call(LuaValue.valueOf(name), tbl);
                         if (!keep.toboolean()) continue;
                     }
                     matches.add(tbl);
-                    seen.add(bp);
-                }
-
-                // Bluetooth-registered ByteBlock MONITOR devices (label-based lookup).
-                // BluetoothNetwork is an in-memory registry — does NOT touch chunks.
-                if ("monitor".equals(wantedType)) {
-                    var btDevs = BluetoothNetwork.getDevicesInRange(lvl, pos, BluetoothNetwork.BLOCK_RANGE);
-                    for (var d : btDevs) {
-                        if (d.type() != BluetoothNetwork.DeviceType.MONITOR) continue;
-                        if (seen.contains(d.pos())) continue;
-                        // Try snapshot first; fall back to direct lookup ONLY if
-                        // the BE is in our snapshot (which means its chunk is
-                        // loaded and safe to access from anywhere).
-                        net.minecraft.world.level.block.entity.BlockEntity monBe = snap.get(d.pos());
-                        if (!(monBe instanceof com.apocscode.byteblock.block.entity.MonitorBlockEntity)) continue;
-                        // Use the pre-built table from the server-thread cache rather than
-                        // calling buildTable() on the coroutine thread, and inject __side
-                        // so peripheral.getName(handle) works for liveness checks.
-                        LuaTable tbl = tableCache.get(d.pos());
-                        if (tbl == null) continue; // Not yet in snapshot; skip this tick.
-                        String btName = "monitor_" + d.deviceId().toString().substring(0, 8);
-                        if (filter.isfunction()) {
-                            LuaValue keep = filter.call(LuaValue.valueOf(btName), tbl);
-                            if (!keep.toboolean()) continue;
-                        }
-                        matches.add(tbl);
-                        seen.add(d.pos());
-                    }
                 }
                 if (matches.isEmpty()) return NONE;
                 return LuaValue.varargsOf(matches.toArray(new LuaValue[0]));
             }
         });
 
+        peripheral.set("findByLabel", new OneArgFunction() {
+            @Override
+            public LuaValue call(LuaValue label) {
+                LuaTable out = new LuaTable();
+                int i = 1;
+                String wanted = label.checkjstring();
+                for (LuaTable tbl : listPeripheralTables()) {
+                    String current = metadataString(tbl, "__label", null);
+                    if (current != null && current.equalsIgnoreCase(wanted)) {
+                        out.set(i++, tbl);
+                    }
+                }
+                return out;
+            }
+        });
+
+        peripheral.set("findById", new OneArgFunction() {
+            @Override
+            public LuaValue call(LuaValue id) {
+                LuaTable tbl = findPeripheralByMetadata("__id", id.checkjstring());
+                return tbl == null ? LuaValue.NIL : tbl;
+            }
+        });
+
+        peripheral.set("findByCapability", new OneArgFunction() {
+            @Override
+            public LuaValue call(LuaValue capability) {
+                LuaTable out = new LuaTable();
+                int i = 1;
+                String wanted = capability.checkjstring();
+                for (LuaTable tbl : listPeripheralTables()) {
+                    if (metadataArrayContains(tbl, "__capabilities", wanted)) {
+                        out.set(i++, tbl);
+                    }
+                }
+                return out;
+            }
+        });
+
         // peripheral.getNames() → CC-compat alias for getSides()
-        // Returns a list of side-name strings that have a connected peripheral.
-        // Used by lib_peripherals.getWirelessModem() to enumerate all peripherals.
+        // Returns all discovered peripheral names, including wireless names.
         peripheral.set("getNames", new ZeroArgFunction() {
             @Override
             public LuaValue call() {
                 LuaTable names = new LuaTable();
-                net.minecraft.core.BlockPos pos = os.getBlockPos();
-                if (pos == null) return names;
-                java.util.Map<net.minecraft.core.BlockPos, String> typeCache =
-                        os.getPeripheralTypeCache();
                 int i = 1;
-                for (net.minecraft.core.Direction dir : net.minecraft.core.Direction.values()) {
-                    if (typeCache.containsKey(pos.relative(dir))) {
-                        names.set(i++, LuaValue.valueOf(
-                            com.apocscode.byteblock.computer.peripheral.PeripheralRegistry
-                                .directionToSide(dir)));
+                for (LuaTable tbl : listPeripheralTables()) {
+                    String name = metadataString(tbl, "__name", null);
+                    if (name != null && !name.isBlank()) {
+                        names.set(i++, LuaValue.valueOf(name));
                     }
                 }
                 return names;
@@ -3085,11 +3057,20 @@ public class LuaRuntime {
         peripheral.set("getName", new OneArgFunction() {
             @Override
             public LuaValue call(LuaValue wrapped) {
-                if (wrapped.istable()) {
-                    LuaValue side = wrapped.checktable().rawget(LuaValue.valueOf("__side"));
-                    if (!side.isnil()) return side;
+                LuaTable tbl = resolvePeripheralTable(wrapped);
+                if (tbl != null) {
+                    String name = metadataString(tbl, "__name", null);
+                    if (name != null) return LuaValue.valueOf(name);
                 }
                 return LuaValue.valueOf("unknown");
+            }
+        });
+
+        peripheral.set("status", new OneArgFunction() {
+            @Override
+            public LuaValue call(LuaValue ref) {
+                LuaTable tbl = resolvePeripheralTable(ref);
+                return tbl == null ? LuaValue.NIL : peripheralStatusTable(tbl);
             }
         });
 
@@ -3159,6 +3140,210 @@ public class LuaRuntime {
         });
 
         globals.set("peripheral", peripheral);
+    }
+
+    private java.util.List<LuaTable> listPeripheralTables() {
+        java.util.ArrayList<LuaTable> tables = new java.util.ArrayList<>();
+        java.util.HashSet<LuaTable> seen = new java.util.HashSet<>();
+        for (org.luaj.vm2.LuaTable tbl : os.getPeripheralTableCache().values()) {
+            if (tbl != null && seen.add(tbl)) {
+                installUniversalPeripheralMethods(tbl);
+                tables.add(tbl);
+            }
+        }
+        // Also include entity peripherals (robots/drones)
+        for (org.luaj.vm2.LuaTable tbl : os.getEntityPeripheralTableCache().values()) {
+            if (tbl != null && seen.add(tbl)) {
+                installUniversalPeripheralMethods(tbl);
+                tables.add(tbl);
+            }
+        }
+        return tables;
+    }
+
+    private LuaTable resolvePeripheralTable(LuaValue ref) {
+        if (ref == null || ref.isnil()) return null;
+        if (ref.istable()) {
+            LuaTable tbl = ref.checktable();
+            installUniversalPeripheralMethods(tbl);
+            return tbl;
+        }
+        String name = ref.checkjstring();
+        net.minecraft.core.BlockPos pos = os.getBlockPos();
+        if (pos != null) {
+            net.minecraft.core.Direction dir = com.apocscode.byteblock.computer.peripheral
+                    .PeripheralRegistry.sideToDirection(name);
+            if (dir != null) {
+                LuaTable tbl = os.getPeripheralTableCache().get(pos.relative(dir));
+                if (tbl != null) {
+                    installUniversalPeripheralMethods(tbl);
+                    return tbl;
+                }
+            }
+        }
+        LuaTable byName = findPeripheralByMetadata("__name", name);
+        if (byName != null) return byName;
+        LuaTable byId = findPeripheralByMetadata("__id", name);
+        if (byId != null) return byId;
+        return findPeripheralByMetadata("__label", name);
+    }
+
+    private LuaTable findPeripheralByMetadata(String key, String value) {
+        if (value == null || value.isBlank()) return null;
+        for (LuaTable tbl : listPeripheralTables()) {
+            String current = metadataString(tbl, key, null);
+            if (current != null && current.equalsIgnoreCase(value)) {
+                return tbl;
+            }
+        }
+        return null;
+    }
+
+    private void installUniversalPeripheralMethods(LuaTable tbl) {
+        if (tbl.rawget("id").isnil()) {
+            tbl.set("id", new ZeroArgFunction() {
+                @Override public LuaValue call() {
+                    String value = metadataString(tbl, "__id", null);
+                    return value == null ? LuaValue.NIL : LuaValue.valueOf(value);
+                }
+            });
+        }
+        if (tbl.rawget("name").isnil()) {
+            tbl.set("name", new ZeroArgFunction() {
+                @Override public LuaValue call() {
+                    return LuaValue.valueOf(metadataString(tbl, "__name", "unknown"));
+                }
+            });
+        }
+        if (tbl.rawget("label").isnil()) {
+            tbl.set("label", new ZeroArgFunction() {
+                @Override public LuaValue call() {
+                    String value = metadataString(tbl, "__label", null);
+                    return value == null ? LuaValue.NIL : LuaValue.valueOf(value);
+                }
+            });
+        }
+        if (tbl.rawget("rename").isnil()) {
+            tbl.set("rename", new OneArgFunction() {
+                @Override public LuaValue call(LuaValue value) {
+                    LuaValue fn = tbl.get("setLabel");
+                    if (!fn.isfunction()) return LuaValue.FALSE;
+                    LuaValue result = fn.call(value);
+                    String next = value.checkjstring();
+                    tbl.rawset(LuaValue.valueOf("__label"), LuaValue.valueOf(next));
+                    return result.isnil() ? LuaValue.TRUE : result;
+                }
+            });
+        }
+        if (tbl.rawget("type").isnil()) {
+            tbl.set("type", new ZeroArgFunction() {
+                @Override public LuaValue call() {
+                    return LuaValue.valueOf(metadataString(tbl, "__type", "unknown"));
+                }
+            });
+        }
+        if (tbl.rawget("types").isnil()) {
+            tbl.set("types", new ZeroArgFunction() {
+                @Override public LuaValue call() {
+                    return metadataTableCopy(tbl.rawget("__types"));
+                }
+            });
+        }
+        if (tbl.rawget("capabilities").isnil()) {
+            tbl.set("capabilities", new ZeroArgFunction() {
+                @Override public LuaValue call() {
+                    return metadataTableCopy(tbl.rawget("__capabilities"));
+                }
+            });
+        }
+        if (tbl.rawget("methods").isnil()) {
+            tbl.set("methods", new ZeroArgFunction() {
+                @Override public LuaValue call() {
+                    LuaTable methods = new LuaTable();
+                    int i = 1;
+                    for (LuaValue key = tbl.next(LuaValue.NIL).arg1(); !key.isnil(); key = tbl.next(key).arg1()) {
+                        if (key.isstring() && key.tojstring().startsWith("__")) continue;
+                        methods.set(i++, key);
+                    }
+                    return methods;
+                }
+            });
+        }
+        if (tbl.rawget("status").isnil()) {
+            tbl.set("status", new ZeroArgFunction() {
+                @Override public LuaValue call() {
+                    return peripheralStatusTable(tbl);
+                }
+            });
+        }
+        if (tbl.rawget("help").isnil()) {
+            tbl.set("help", new ZeroArgFunction() {
+                @Override public LuaValue call() {
+                    LuaTable out = new LuaTable();
+                    out.set("name", LuaValue.valueOf(metadataString(tbl, "__name", "unknown")));
+                    out.set("type", LuaValue.valueOf(metadataString(tbl, "__type", "unknown")));
+                    out.set("methods", metadataTableCopy(tbl.get("methods").call()));
+                    out.set("capabilities", metadataTableCopy(tbl.rawget("__capabilities")));
+                    return out;
+                }
+            });
+        }
+        if (tbl.rawget("isOnline").isnil()) {
+            tbl.set("isOnline", new ZeroArgFunction() {
+                @Override public LuaValue call() { return LuaValue.TRUE; }
+            });
+        }
+    }
+
+    private LuaTable peripheralStatusTable(LuaTable tbl) {
+        installUniversalPeripheralMethods(tbl);
+        LuaTable out = new LuaTable();
+        out.set("name", LuaValue.valueOf(metadataString(tbl, "__name", "unknown")));
+        String id = metadataString(tbl, "__id", null);
+        if (id != null) out.set("id", LuaValue.valueOf(id));
+        String label = metadataString(tbl, "__label", null);
+        if (label != null) out.set("label", LuaValue.valueOf(label));
+        out.set("type", LuaValue.valueOf(metadataString(tbl, "__type", "unknown")));
+        out.set("types", metadataTableCopy(tbl.rawget("__types")));
+        out.set("capabilities", metadataTableCopy(tbl.rawget("__capabilities")));
+        out.set("online", LuaValue.TRUE);
+        out.set("wireless", LuaValue.valueOf(tbl.rawget("__wireless").toboolean()));
+        if (!tbl.rawget("__side").isnil()) out.set("side", tbl.rawget("__side"));
+        if (!tbl.rawget("__dimension").isnil()) out.set("dimension", tbl.rawget("__dimension"));
+        out.set("x", tbl.rawget("__x"));
+        out.set("y", tbl.rawget("__y"));
+        out.set("z", tbl.rawget("__z"));
+        out.set("lastSeen", tbl.rawget("__lastSeen"));
+        out.set("methods", metadataTableCopy(tbl.get("methods").call()));
+        return out;
+    }
+
+    private LuaTable metadataTableCopy(LuaValue value) {
+        LuaTable out = new LuaTable();
+        if (!value.istable()) return out;
+        LuaTable src = value.checktable();
+        for (Varargs n = src.next(LuaValue.NIL); !n.arg1().isnil(); n = src.next(n.arg1())) {
+            out.set(n.arg1(), n.arg(2));
+        }
+        return out;
+    }
+
+    private String metadataString(LuaTable tbl, String key, String fallback) {
+        LuaValue value = tbl.rawget(LuaValue.valueOf(key));
+        return value.isnil() ? fallback : value.tojstring();
+    }
+
+    private boolean metadataArrayContains(LuaTable tbl, String key, String wanted) {
+        if (wanted == null || wanted.isBlank()) return false;
+        LuaValue value = tbl.rawget(LuaValue.valueOf(key));
+        if (!value.istable()) return false;
+        LuaTable arr = value.checktable();
+        for (int i = 1; ; i++) {
+            LuaValue entry = arr.get(i);
+            if (entry.isnil()) break;
+            if (wanted.equalsIgnoreCase(entry.tojstring())) return true;
+        }
+        return false;
     }
 
     /**

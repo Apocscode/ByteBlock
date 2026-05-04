@@ -77,6 +77,14 @@ public class JavaOS {
             net.neoforged.neoforge.items.IItemHandler> adjacentItemHandlerCache
             = java.util.Collections.emptyMap();
 
+    // Entity-hosted peripherals (robots/drones) keyed by their UUID.
+    // Populated server-thread-only during refreshPeripheralSnapshot().
+    private volatile java.util.Map<java.util.UUID, org.luaj.vm2.LuaTable> entityPeripheralTableCache
+            = java.util.Collections.emptyMap();
+
+    // Previous peripheral name sets for online/offline event detection.
+    private java.util.Set<String> prevPeripheralNames = new java.util.HashSet<>();
+
     // Optional entity host (set by entity-hosted computers like RobotEntity)
     private transient net.minecraft.world.entity.Entity host;
 
@@ -881,6 +889,10 @@ public class JavaOS {
         return adjacentItemHandlerCache;
     }
 
+    public java.util.Map<java.util.UUID, org.luaj.vm2.LuaTable> getEntityPeripheralTableCache() {
+        return entityPeripheralTableCache;
+    }
+
     /** Returns a durable value persisted in block entity NBT, or null when missing. */
     public String getPersistentValue(String key) {
         if (key == null || key.isBlank()) return null;
@@ -1002,6 +1014,7 @@ public class JavaOS {
                             tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__side"),
                                        org.luaj.vm2.LuaValue.valueOf(side));
                         }
+                        injectPeripheralMetadata(tbl, bp, adapter, be, side, t);
                         tableSnap.put(bp, tbl);
                         break;
                     }
@@ -1026,6 +1039,104 @@ public class JavaOS {
             if (ih != null) adjHandlerSnap.put(adjPos, ih);
         }
         adjacentItemHandlerCache = java.util.Collections.unmodifiableMap(adjHandlerSnap);
+
+        // Entity peripheral snapshot — robots and drones in Bluetooth range.
+        // Runs on server thread, so safe to call getEntitiesOfClass().
+        java.util.Map<java.util.UUID, org.luaj.vm2.LuaTable> entitySnap = new java.util.HashMap<>();
+        net.minecraft.world.phys.AABB entityBox = new net.minecraft.world.phys.AABB(
+                blockPos.getX() - r, blockPos.getY() - r, blockPos.getZ() - r,
+                blockPos.getX() + r, blockPos.getY() + r, blockPos.getZ() + r);
+        for (com.apocscode.byteblock.entity.RobotEntity robot
+                : sl.getEntitiesOfClass(com.apocscode.byteblock.entity.RobotEntity.class, entityBox)) {
+            try { entitySnap.put(robot.getComputerId(), buildRobotPeripheralTable(robot, t)); }
+            catch (Exception e) { javaLog("robot peripheral threw: " + e); }
+        }
+        for (com.apocscode.byteblock.entity.DroneEntity drone
+                : sl.getEntitiesOfClass(com.apocscode.byteblock.entity.DroneEntity.class, entityBox)) {
+            try { entitySnap.put(drone.getDroneId(), buildDronePeripheralTable(drone, t)); }
+            catch (Exception e) { javaLog("drone peripheral threw: " + e); }
+        }
+        entityPeripheralTableCache = java.util.Collections.unmodifiableMap(entitySnap);
+
+        // ── Peripheral online/offline event detection ─────────────────────
+        // Build a flat set of all current peripheral names (block + entity).
+        java.util.Set<String> currNames = new java.util.HashSet<>();
+        for (org.luaj.vm2.LuaTable tbl : tableSnap.values()) {
+            org.luaj.vm2.LuaValue nameVal = tbl.rawget(org.luaj.vm2.LuaValue.valueOf("__name"));
+            if (!nameVal.isnil()) currNames.add(nameVal.tojstring());
+        }
+        for (org.luaj.vm2.LuaTable tbl : entitySnap.values()) {
+            org.luaj.vm2.LuaValue nameVal = tbl.rawget(org.luaj.vm2.LuaValue.valueOf("__name"));
+            if (!nameVal.isnil()) currNames.add(nameVal.tojstring());
+        }
+        // Fire peripheral_online for newly appeared devices.
+        for (String pName : currNames) {
+            if (!prevPeripheralNames.contains(pName)) {
+                // Find type from block or entity cache
+                String pType = "peripheral";
+                for (org.luaj.vm2.LuaTable tbl : tableSnap.values()) {
+                    org.luaj.vm2.LuaValue nv = tbl.rawget(org.luaj.vm2.LuaValue.valueOf("__name"));
+                    if (!nv.isnil() && pName.equals(nv.tojstring())) {
+                        org.luaj.vm2.LuaValue tv = tbl.rawget(org.luaj.vm2.LuaValue.valueOf("__type"));
+                        if (!tv.isnil()) pType = tv.tojstring();
+                        break;
+                    }
+                }
+                for (org.luaj.vm2.LuaTable tbl : entitySnap.values()) {
+                    org.luaj.vm2.LuaValue nv = tbl.rawget(org.luaj.vm2.LuaValue.valueOf("__name"));
+                    if (!nv.isnil() && pName.equals(nv.tojstring())) {
+                        org.luaj.vm2.LuaValue tv = tbl.rawget(org.luaj.vm2.LuaValue.valueOf("__type"));
+                        if (!tv.isnil()) pType = tv.tojstring();
+                        break;
+                    }
+                }
+                pushEvent(new OSEvent(OSEvent.Type.PERIPHERAL_ONLINE, pName, pType));
+            }
+        }
+        // Fire peripheral_offline for devices that disappeared.
+        for (String pName : prevPeripheralNames) {
+            if (!currNames.contains(pName)) {
+                pushEvent(new OSEvent(OSEvent.Type.PERIPHERAL_OFFLINE, pName, "peripheral"));
+            }
+        }
+        prevPeripheralNames = currNames;
+
+        // ── Peripheral alert events (low fuel/energy) ─────────────────────
+        for (org.luaj.vm2.LuaTable tbl : entitySnap.values()) {
+            try {
+                org.luaj.vm2.LuaValue nameV = tbl.rawget(org.luaj.vm2.LuaValue.valueOf("__name"));
+                org.luaj.vm2.LuaValue typeV = tbl.rawget(org.luaj.vm2.LuaValue.valueOf("__type"));
+                if (nameV.isnil()) continue;
+                String pName = nameV.tojstring();
+                String pType = typeV.isnil() ? "" : typeV.tojstring();
+                if ("drone".equals(pType)) {
+                    // Low fuel alert when < 10%
+                    org.luaj.vm2.LuaValue fuelFn = tbl.get("getFuel");
+                    org.luaj.vm2.LuaValue capFn  = tbl.get("getFuelCapacity");
+                    if (fuelFn.isfunction() && capFn.isfunction()) {
+                        int fuel = fuelFn.call().toint();
+                        int cap  = capFn.call().toint();
+                        if (cap > 0 && (double) fuel / cap < 0.10) {
+                            pushEvent(new OSEvent(OSEvent.Type.PERIPHERAL_ALERT,
+                                    pName, "low_fuel", fuel));
+                        }
+                    }
+                } else if ("robot".equals(pType)) {
+                    // Low energy alert when < 10%
+                    org.luaj.vm2.LuaValue engFn = tbl.get("getEnergy");
+                    org.luaj.vm2.LuaValue capFn  = tbl.get("getEnergyCapacity");
+                    if (engFn.isfunction() && capFn.isfunction()) {
+                        int eng = engFn.call().toint();
+                        int cap = capFn.call().toint();
+                        if (cap > 0 && (double) eng / cap < 0.10) {
+                            pushEvent(new OSEvent(OSEvent.Type.PERIPHERAL_ALERT,
+                                    pName, "low_energy", eng));
+                        }
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
         // Log summary every snapshot so we can correlate with Lua failures.
         // Throttled to once per ~5s (every 100 ticks) to avoid log spam.
         if ((t % 100) == 0) {
@@ -1041,11 +1152,394 @@ public class JavaOS {
                 } else { extra++; }
             }
             javaLog(String.format(
-                "snapshot refresh: tick=%d computer=(%d,%d,%d) range=%d chunks=%d/%d snap.size=%d types=[%s%s]",
+                "snapshot refresh: tick=%d computer=(%d,%d,%d) range=%d chunks=%d/%d snap.size=%d entity=%d types=[%s%s]",
                 t, blockPos.getX(), blockPos.getY(), blockPos.getZ(), r,
-                chunksLoaded, (chunksLoaded + chunksUnloaded), snap.size(),
+                chunksLoaded, (chunksLoaded + chunksUnloaded), snap.size(), entitySnap.size(),
                 typeList.toString(), extra > 0 ? (",+" + extra + " more") : ""));
         }
+    }
+
+    private void injectPeripheralMetadata(
+            org.luaj.vm2.LuaTable tbl,
+            net.minecraft.core.BlockPos pos,
+            com.apocscode.byteblock.computer.peripheral.IPeripheralAdapter adapter,
+            net.minecraft.world.level.block.entity.BlockEntity be,
+            String side,
+            long gameTime) {
+        String type = adapter.getType(be);
+        java.util.List<String> types = adapter.getTypes(be);
+        java.util.List<String> capabilities = adapter.getCapabilities(be);
+        String label = adapter.getLabel(be);
+        String stableId = adapter.getStableId(be);
+        boolean wireless = side == null;
+        String name;
+        if (side != null) {
+            name = side;
+        } else if (stableId != null && stableId.length() >= 8) {
+            name = type + "_" + stableId.substring(0, 8);
+        } else {
+            name = type + "_" + pos.getX() + "_" + pos.getY() + "_" + pos.getZ();
+        }
+
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__name"), org.luaj.vm2.LuaValue.valueOf(name));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__type"), org.luaj.vm2.LuaValue.valueOf(type));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__wireless"), org.luaj.vm2.LuaValue.valueOf(wireless));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__x"), org.luaj.vm2.LuaValue.valueOf(pos.getX()));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__y"), org.luaj.vm2.LuaValue.valueOf(pos.getY()));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__z"), org.luaj.vm2.LuaValue.valueOf(pos.getZ()));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__lastSeen"), org.luaj.vm2.LuaValue.valueOf((int) gameTime));
+        if (level != null) {
+            tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__dimension"),
+                    org.luaj.vm2.LuaValue.valueOf(level.dimension().location().toString()));
+        }
+        if (label != null && !label.isBlank()) {
+            tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__label"), org.luaj.vm2.LuaValue.valueOf(label));
+        }
+        if (stableId != null && !stableId.isBlank()) {
+            tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__id"), org.luaj.vm2.LuaValue.valueOf(stableId));
+        }
+
+        org.luaj.vm2.LuaTable typeTable = new org.luaj.vm2.LuaTable();
+        int i = 1;
+        for (String entry : types) {
+            if (entry == null || entry.isBlank()) continue;
+            typeTable.set(i++, org.luaj.vm2.LuaValue.valueOf(entry));
+        }
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__types"), typeTable);
+
+        org.luaj.vm2.LuaTable capTable = new org.luaj.vm2.LuaTable();
+        i = 1;
+        for (String entry : capabilities) {
+            if (entry == null || entry.isBlank()) continue;
+            capTable.set(i++, org.luaj.vm2.LuaValue.valueOf(entry));
+        }
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__capabilities"), capTable);
+    }
+
+    // ── Entity peripheral table builders ─────────────────────────────────
+
+    private org.luaj.vm2.LuaTable buildRobotPeripheralTable(
+            com.apocscode.byteblock.entity.RobotEntity robot, long gameTime) {
+        org.luaj.vm2.LuaTable tbl = new org.luaj.vm2.LuaTable();
+        net.minecraft.core.BlockPos rpos = robot.blockPosition();
+        java.util.UUID id = robot.getComputerId();
+        String idStr = id.toString();
+        String name = "robot_" + idStr.substring(0, 8);
+        String dim = level != null ? level.dimension().location().toString() : "unknown";
+
+        // Metadata
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__name"),       org.luaj.vm2.LuaValue.valueOf(name));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__type"),       org.luaj.vm2.LuaValue.valueOf("robot"));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__id"),         org.luaj.vm2.LuaValue.valueOf(idStr));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__x"),          org.luaj.vm2.LuaValue.valueOf(rpos.getX()));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__y"),          org.luaj.vm2.LuaValue.valueOf(rpos.getY()));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__z"),          org.luaj.vm2.LuaValue.valueOf(rpos.getZ()));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__wireless"),   org.luaj.vm2.LuaValue.TRUE);
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__lastSeen"),   org.luaj.vm2.LuaValue.valueOf((int) gameTime));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__dimension"),  org.luaj.vm2.LuaValue.valueOf(dim));
+
+        // Snapshot state values
+        int energy    = robot.getEnergyStorage() != null ? robot.getEnergyStorage().getEnergyStored() : 0;
+        int maxEnergy = robot.getEnergyStorage() != null ? robot.getEnergyStorage().getMaxEnergyStored() : 0;
+        float shield  = robot.getShieldHP();
+        int invSize   = robot.getInventory().getContainerSize();
+        int channel   = robot.getBluetoothChannel();
+
+        // Upgrade names
+        org.luaj.vm2.LuaTable upTbl = new org.luaj.vm2.LuaTable();
+        net.minecraft.world.SimpleContainer upSlots = robot.getUpgradeSlots();
+        for (int u = 0; u < upSlots.getContainerSize(); u++) {
+            net.minecraft.world.item.ItemStack stack = upSlots.getItem(u);
+            if (!stack.isEmpty()) {
+                upTbl.set(u + 1, org.luaj.vm2.LuaValue.valueOf(
+                    net.minecraft.core.registries.BuiltInRegistries.ITEM
+                        .getKey(stack.getItem()).getPath()));
+            }
+        }
+
+        // Types and capabilities
+        org.luaj.vm2.LuaTable typesTbl = new org.luaj.vm2.LuaTable();
+        typesTbl.set(1, org.luaj.vm2.LuaValue.valueOf("robot"));
+        typesTbl.set(2, org.luaj.vm2.LuaValue.valueOf("mobile"));
+        typesTbl.set(3, org.luaj.vm2.LuaValue.valueOf("computer"));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__types"), typesTbl);
+        org.luaj.vm2.LuaTable capsTbl = new org.luaj.vm2.LuaTable();
+        capsTbl.set(1, org.luaj.vm2.LuaValue.valueOf("energy"));
+        capsTbl.set(2, org.luaj.vm2.LuaValue.valueOf("inventory"));
+        capsTbl.set(3, org.luaj.vm2.LuaValue.valueOf("wireless"));
+        capsTbl.set(4, org.luaj.vm2.LuaValue.valueOf("movement"));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__capabilities"), capsTbl);
+
+        // State read methods (return snapshotted values — safe from any thread)
+        tbl.set("getEnergy",         new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return org.luaj.vm2.LuaValue.valueOf(energy); } });
+        tbl.set("getEnergyCapacity", new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return org.luaj.vm2.LuaValue.valueOf(maxEnergy); } });
+        tbl.set("getShield",         new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return org.luaj.vm2.LuaValue.valueOf((double) shield); } });
+        tbl.set("getShieldMax",      new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return org.luaj.vm2.LuaValue.valueOf(8.0); } });
+        tbl.set("getChannel",        new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return org.luaj.vm2.LuaValue.valueOf(channel); } });
+        tbl.set("getUpgrades",       new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return upTbl; } });
+        tbl.set("getInventorySize",  new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return org.luaj.vm2.LuaValue.valueOf(invSize); } });
+        tbl.set("getFacing",         new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return org.luaj.vm2.LuaValue.valueOf(robot.getRobotFacing().getName()); } });
+        tbl.set("isCharging",        new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return org.luaj.vm2.LuaValue.valueOf(robot.isCharging()); } });
+        tbl.set("position", new org.luaj.vm2.lib.ZeroArgFunction() {
+            @Override public org.luaj.vm2.LuaValue call() {
+                org.luaj.vm2.LuaTable p = new org.luaj.vm2.LuaTable();
+                p.set("x", org.luaj.vm2.LuaValue.valueOf(rpos.getX()));
+                p.set("y", org.luaj.vm2.LuaValue.valueOf(rpos.getY()));
+                p.set("z", org.luaj.vm2.LuaValue.valueOf(rpos.getZ()));
+                return p;
+            }
+        });
+        tbl.set("hasUpgrade", new org.luaj.vm2.lib.OneArgFunction() {
+            @Override public org.luaj.vm2.LuaValue call(org.luaj.vm2.LuaValue arg) {
+                String want = arg.tojstring().toLowerCase();
+                net.minecraft.world.SimpleContainer us = robot.getUpgradeSlots();
+                for (int u = 0; u < us.getContainerSize(); u++) {
+                    net.minecraft.world.item.ItemStack s = us.getItem(u);
+                    if (!s.isEmpty() && net.minecraft.core.registries.BuiltInRegistries.ITEM
+                            .getKey(s.getItem()).getPath().toLowerCase().contains(want)) {
+                        return org.luaj.vm2.LuaValue.TRUE;
+                    }
+                }
+                return org.luaj.vm2.LuaValue.FALSE;
+            }
+        });
+        tbl.set("getInventory", new org.luaj.vm2.lib.ZeroArgFunction() {
+            @Override public org.luaj.vm2.LuaValue call() {
+                org.luaj.vm2.LuaTable inv = new org.luaj.vm2.LuaTable();
+                net.minecraft.world.SimpleContainer c = robot.getInventory();
+                for (int s = 0; s < c.getContainerSize(); s++) {
+                    net.minecraft.world.item.ItemStack stack = c.getItem(s);
+                    if (!stack.isEmpty()) {
+                        org.luaj.vm2.LuaTable entry = new org.luaj.vm2.LuaTable();
+                        entry.set("slot", org.luaj.vm2.LuaValue.valueOf(s + 1));
+                        entry.set("name", org.luaj.vm2.LuaValue.valueOf(
+                            net.minecraft.core.registries.BuiltInRegistries.ITEM
+                                .getKey(stack.getItem()).toString()));
+                        entry.set("count", org.luaj.vm2.LuaValue.valueOf(stack.getCount()));
+                        inv.set(s + 1, entry);
+                    }
+                }
+                return inv;
+            }
+        });
+
+        // Action methods — send BT commands to the robot (thread-safe via BT)
+        int btChannel = channel;
+        java.util.UUID robotId = id;
+        java.net.InetAddress unused = null; // just to have level captured via closure
+        net.minecraft.world.level.Level lvl = level;
+        net.minecraft.core.BlockPos myPos = blockPos;
+
+        tbl.set("moveTo", new org.luaj.vm2.lib.VarArgFunction() {
+            @Override public org.luaj.vm2.Varargs invoke(org.luaj.vm2.Varargs args) {
+                int x = args.checkint(1), y = args.checkint(2), z = args.checkint(3);
+                com.apocscode.byteblock.network.BluetoothNetwork.send(
+                    lvl, myPos, null, robotId, btChannel, "robot:cmd:goto:" + x + ":" + y + ":" + z);
+                return org.luaj.vm2.LuaValue.TRUE;
+            }
+        });
+        tbl.set("stop", new org.luaj.vm2.lib.ZeroArgFunction() {
+            @Override public org.luaj.vm2.LuaValue call() {
+                com.apocscode.byteblock.network.BluetoothNetwork.send(
+                    lvl, myPos, null, robotId, btChannel, "robot:cmd:stop");
+                return org.luaj.vm2.LuaValue.TRUE;
+            }
+        });
+        tbl.set("returnHome", new org.luaj.vm2.lib.ZeroArgFunction() {
+            @Override public org.luaj.vm2.LuaValue call() {
+                com.apocscode.byteblock.network.BluetoothNetwork.send(
+                    lvl, myPos, null, robotId, btChannel, "robot:cmd:clearNav");
+                return org.luaj.vm2.LuaValue.TRUE;
+            }
+        });
+        tbl.set("queueCmd", new org.luaj.vm2.lib.OneArgFunction() {
+            @Override public org.luaj.vm2.LuaValue call(org.luaj.vm2.LuaValue arg) {
+                com.apocscode.byteblock.network.BluetoothNetwork.send(
+                    lvl, myPos, null, robotId, btChannel, "robot:cmd:" + arg.tojstring());
+                return org.luaj.vm2.LuaValue.TRUE;
+            }
+        });
+        tbl.set("patrol", new org.luaj.vm2.lib.VarArgFunction() {
+            @Override public org.luaj.vm2.Varargs invoke(org.luaj.vm2.Varargs args) {
+                int x1 = args.checkint(1), y1 = args.checkint(2), z1 = args.checkint(3);
+                int x2 = args.checkint(4), y2 = args.checkint(5), z2 = args.checkint(6);
+                com.apocscode.byteblock.network.BluetoothNetwork.send(
+                    lvl, myPos, null, robotId, btChannel,
+                    "robot:cmd:patrol:" + x1 + ":" + y1 + ":" + z1 + ":" + x2 + ":" + y2 + ":" + z2);
+                return org.luaj.vm2.LuaValue.TRUE;
+            }
+        });
+
+        return tbl;
+    }
+
+    private org.luaj.vm2.LuaTable buildDronePeripheralTable(
+            com.apocscode.byteblock.entity.DroneEntity drone, long gameTime) {
+        org.luaj.vm2.LuaTable tbl = new org.luaj.vm2.LuaTable();
+        net.minecraft.core.BlockPos dpos = drone.blockPosition();
+        java.util.UUID id = drone.getDroneId();
+        String idStr = id.toString();
+        String name = "drone_" + idStr.substring(0, 8);
+        String dim = level != null ? level.dimension().location().toString() : "unknown";
+
+        // Metadata
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__name"),       org.luaj.vm2.LuaValue.valueOf(name));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__type"),       org.luaj.vm2.LuaValue.valueOf("drone"));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__id"),         org.luaj.vm2.LuaValue.valueOf(idStr));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__x"),          org.luaj.vm2.LuaValue.valueOf(dpos.getX()));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__y"),          org.luaj.vm2.LuaValue.valueOf(dpos.getY()));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__z"),          org.luaj.vm2.LuaValue.valueOf(dpos.getZ()));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__wireless"),   org.luaj.vm2.LuaValue.TRUE);
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__lastSeen"),   org.luaj.vm2.LuaValue.valueOf((int) gameTime));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__dimension"),  org.luaj.vm2.LuaValue.valueOf(dim));
+
+        // Snapshot state values
+        int fuel       = drone.getFuel();
+        float shield   = drone.getShieldHP();
+        int invSize    = drone.getInventory().getContainerSize();
+        int channel    = drone.getBluetoothChannel();
+        int waypointCt = drone.getWaypointCount();
+        boolean hovering = drone.isHovering();
+        boolean defender = drone.isDefender();
+        int laserTarget  = drone.getLaserTargetId();
+        String variant   = drone.getVariant().name().toLowerCase();
+
+        // Upgrade names
+        org.luaj.vm2.LuaTable upTbl = new org.luaj.vm2.LuaTable();
+        net.minecraft.world.SimpleContainer upSlots = drone.getUpgradeSlots();
+        for (int u = 0; u < upSlots.getContainerSize(); u++) {
+            net.minecraft.world.item.ItemStack stack = upSlots.getItem(u);
+            if (!stack.isEmpty()) {
+                upTbl.set(u + 1, org.luaj.vm2.LuaValue.valueOf(
+                    net.minecraft.core.registries.BuiltInRegistries.ITEM
+                        .getKey(stack.getItem()).getPath()));
+            }
+        }
+
+        // Types and capabilities
+        org.luaj.vm2.LuaTable typesTbl = new org.luaj.vm2.LuaTable();
+        typesTbl.set(1, org.luaj.vm2.LuaValue.valueOf("drone"));
+        typesTbl.set(2, org.luaj.vm2.LuaValue.valueOf("mobile"));
+        typesTbl.set(3, org.luaj.vm2.LuaValue.valueOf("computer"));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__types"), typesTbl);
+        org.luaj.vm2.LuaTable capsTbl = new org.luaj.vm2.LuaTable();
+        capsTbl.set(1, org.luaj.vm2.LuaValue.valueOf("fuel"));
+        capsTbl.set(2, org.luaj.vm2.LuaValue.valueOf("inventory"));
+        capsTbl.set(3, org.luaj.vm2.LuaValue.valueOf("wireless"));
+        capsTbl.set(4, org.luaj.vm2.LuaValue.valueOf("flight"));
+        tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__capabilities"), capsTbl);
+
+        // State read methods
+        tbl.set("getFuel",           new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return org.luaj.vm2.LuaValue.valueOf(fuel); } });
+        tbl.set("getFuelCapacity",   new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return org.luaj.vm2.LuaValue.valueOf(com.apocscode.byteblock.entity.DroneEntity.MAX_FUEL); } });
+        tbl.set("getShield",         new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return org.luaj.vm2.LuaValue.valueOf((double) shield); } });
+        tbl.set("getShieldMax",      new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return org.luaj.vm2.LuaValue.valueOf(8.0); } });
+        tbl.set("getChannel",        new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return org.luaj.vm2.LuaValue.valueOf(channel); } });
+        tbl.set("getWaypointCount",  new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return org.luaj.vm2.LuaValue.valueOf(waypointCt); } });
+        tbl.set("isHovering",        new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return org.luaj.vm2.LuaValue.valueOf(hovering); } });
+        tbl.set("isDefender",        new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return org.luaj.vm2.LuaValue.valueOf(defender); } });
+        tbl.set("getLaserTarget",    new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return laserTarget < 0 ? org.luaj.vm2.LuaValue.NIL : org.luaj.vm2.LuaValue.valueOf(laserTarget); } });
+        tbl.set("getVariant",        new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return org.luaj.vm2.LuaValue.valueOf(variant); } });
+        tbl.set("getInventorySize",  new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return org.luaj.vm2.LuaValue.valueOf(invSize); } });
+        tbl.set("getUpgrades",       new org.luaj.vm2.lib.ZeroArgFunction() { @Override public org.luaj.vm2.LuaValue call() { return upTbl; } });
+        tbl.set("position", new org.luaj.vm2.lib.ZeroArgFunction() {
+            @Override public org.luaj.vm2.LuaValue call() {
+                org.luaj.vm2.LuaTable p = new org.luaj.vm2.LuaTable();
+                p.set("x", org.luaj.vm2.LuaValue.valueOf(dpos.getX()));
+                p.set("y", org.luaj.vm2.LuaValue.valueOf(dpos.getY()));
+                p.set("z", org.luaj.vm2.LuaValue.valueOf(dpos.getZ()));
+                return p;
+            }
+        });
+        tbl.set("hasUpgrade", new org.luaj.vm2.lib.OneArgFunction() {
+            @Override public org.luaj.vm2.LuaValue call(org.luaj.vm2.LuaValue arg) {
+                String want = arg.tojstring().toLowerCase();
+                net.minecraft.world.SimpleContainer us = drone.getUpgradeSlots();
+                for (int u = 0; u < us.getContainerSize(); u++) {
+                    net.minecraft.world.item.ItemStack s = us.getItem(u);
+                    if (!s.isEmpty() && net.minecraft.core.registries.BuiltInRegistries.ITEM
+                            .getKey(s.getItem()).getPath().toLowerCase().contains(want)) {
+                        return org.luaj.vm2.LuaValue.TRUE;
+                    }
+                }
+                return org.luaj.vm2.LuaValue.FALSE;
+            }
+        });
+        tbl.set("getInventory", new org.luaj.vm2.lib.ZeroArgFunction() {
+            @Override public org.luaj.vm2.LuaValue call() {
+                org.luaj.vm2.LuaTable inv = new org.luaj.vm2.LuaTable();
+                net.minecraft.world.SimpleContainer c = drone.getInventory();
+                for (int s = 0; s < c.getContainerSize(); s++) {
+                    net.minecraft.world.item.ItemStack stack = c.getItem(s);
+                    if (!stack.isEmpty()) {
+                        org.luaj.vm2.LuaTable entry = new org.luaj.vm2.LuaTable();
+                        entry.set("slot", org.luaj.vm2.LuaValue.valueOf(s + 1));
+                        entry.set("name", org.luaj.vm2.LuaValue.valueOf(
+                            net.minecraft.core.registries.BuiltInRegistries.ITEM
+                                .getKey(stack.getItem()).toString()));
+                        entry.set("count", org.luaj.vm2.LuaValue.valueOf(stack.getCount()));
+                        inv.set(s + 1, entry);
+                    }
+                }
+                return inv;
+            }
+        });
+
+        // Action methods — send BT commands to the drone
+        int btChannel = channel;
+        java.util.UUID droneId = id;
+        net.minecraft.world.level.Level lvl = level;
+        net.minecraft.core.BlockPos myPos = blockPos;
+
+        tbl.set("addWaypoint", new org.luaj.vm2.lib.VarArgFunction() {
+            @Override public org.luaj.vm2.Varargs invoke(org.luaj.vm2.Varargs args) {
+                double x = args.checkdouble(1), y = args.checkdouble(2), z = args.checkdouble(3);
+                com.apocscode.byteblock.network.BluetoothNetwork.send(
+                    lvl, myPos, null, droneId, btChannel,
+                    "drone:waypoint:" + (int)x + ":" + (int)y + ":" + (int)z);
+                return org.luaj.vm2.LuaValue.TRUE;
+            }
+        });
+        tbl.set("clearWaypoints", new org.luaj.vm2.lib.ZeroArgFunction() {
+            @Override public org.luaj.vm2.LuaValue call() {
+                com.apocscode.byteblock.network.BluetoothNetwork.send(
+                    lvl, myPos, null, droneId, btChannel, "drone:clear");
+                return org.luaj.vm2.LuaValue.TRUE;
+            }
+        });
+        tbl.set("returnHome", new org.luaj.vm2.lib.ZeroArgFunction() {
+            @Override public org.luaj.vm2.LuaValue call() {
+                com.apocscode.byteblock.network.BluetoothNetwork.send(
+                    lvl, myPos, null, droneId, btChannel, "drone:home");
+                return org.luaj.vm2.LuaValue.TRUE;
+            }
+        });
+        tbl.set("hover", new org.luaj.vm2.lib.OneArgFunction() {
+            @Override public org.luaj.vm2.LuaValue call(org.luaj.vm2.LuaValue arg) {
+                String val = arg.isboolean() ? (arg.toboolean() ? "true" : "false") : arg.tojstring();
+                com.apocscode.byteblock.network.BluetoothNetwork.send(
+                    lvl, myPos, null, droneId, btChannel, "drone:hover:" + val);
+                return org.luaj.vm2.LuaValue.TRUE;
+            }
+        });
+        tbl.set("setDefender", new org.luaj.vm2.lib.OneArgFunction() {
+            @Override public org.luaj.vm2.LuaValue call(org.luaj.vm2.LuaValue arg) {
+                com.apocscode.byteblock.network.BluetoothNetwork.send(
+                    lvl, myPos, null, droneId, btChannel,
+                    "drone:defender:" + (arg.toboolean() ? "true" : "false"));
+                return org.luaj.vm2.LuaValue.TRUE;
+            }
+        });
+        tbl.set("scan", new org.luaj.vm2.lib.OneArgFunction() {
+            @Override public org.luaj.vm2.LuaValue call(org.luaj.vm2.LuaValue arg) {
+                int r2 = arg.isnil() ? 8 : arg.checkint();
+                com.apocscode.byteblock.network.BluetoothNetwork.send(
+                    lvl, myPos, null, droneId, btChannel, "drone:scan:" + r2);
+                return org.luaj.vm2.LuaValue.TRUE;
+            }
+        });
+
+        return tbl;
     }
 
     /**

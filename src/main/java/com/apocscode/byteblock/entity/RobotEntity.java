@@ -549,7 +549,12 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
         try {
             switch (parts[1]) {
                 case "cmd" -> {
-                    if (parts.length >= 3) queueCommand(parts[2]);
+                    // Reconstruct the full command from remaining parts so that
+                    // nav commands like "robot:cmd:goto:x:y:z" arrive as "goto:x:y:z".
+                    if (parts.length >= 3) {
+                        String navCmd = raw.substring("robot:cmd:".length());
+                        queueCommand(navCmd);
+                    }
                 }
                 case "upload" -> {
                     if (parts.length < 4) return;

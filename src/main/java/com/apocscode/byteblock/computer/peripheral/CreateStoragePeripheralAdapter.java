@@ -71,6 +71,16 @@ public class CreateStoragePeripheralAdapter implements IPeripheralAdapter {
     }
 
     @Override
+    public java.util.List<String> getTypes(BlockEntity be) {
+        return java.util.List.of("create_storage", "storage");
+    }
+
+    @Override
+    public java.util.List<String> getCapabilities(BlockEntity be) {
+        return java.util.List.of("storage", "inventory");
+    }
+
+    @Override
     public String getType(BlockEntity be) {
         if (!ensureCache()) return "unknown";
         if (clsControllerBE != null && clsControllerBE.isInstance(be)) return "storage_controller";

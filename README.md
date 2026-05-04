@@ -15,6 +15,7 @@ An in-game Java computer simulator for Minecraft 1.21.1 (NeoForge 21.1.215, Java
 - Monitor rendering behavior received additional cleanup paths for explicit blank mode transitions.
 
 See `SESSION_LOG.md` and `CHANGELOG.md` for the latest task-by-task updates.
+See `docs/universal-peripheral-spec.md` for the planned unified Lua/peripheral API and mod compatibility targets.
 
 ByteBlock adds programmable **Computer** blocks with a desktop-style OS, a **Bluetooth**-style wireless
 networking layer, and a small ecosystem of peripheral blocks — scanners, monitors, redstone relays,

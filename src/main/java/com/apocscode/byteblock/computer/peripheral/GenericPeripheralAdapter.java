@@ -51,6 +51,31 @@ public class GenericPeripheralAdapter implements IPeripheralAdapter {
     }
 
     @Override
+    public java.util.List<String> getTypes(BlockEntity be) {
+        java.util.LinkedHashSet<String> tags = new java.util.LinkedHashSet<>();
+        tags.add(getType(be));
+        tags.add("peripheral");
+        if (getItems(be) != null) {
+            tags.add("inventory");
+            tags.add("storage");
+        }
+        if (getFluids(be) != null) {
+            tags.add("fluid_storage");
+            tags.add("fluid");
+        }
+        if (getEnergy(be) != null) {
+            tags.add("energy_storage");
+            tags.add("energy");
+        }
+        return new java.util.ArrayList<>(tags);
+    }
+
+    @Override
+    public java.util.List<String> getCapabilities(BlockEntity be) {
+        return getTypes(be);
+    }
+
+    @Override
     public LuaTable buildTable(BlockEntity be) { return buildTable(be, null); }
 
     @Override
