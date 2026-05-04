@@ -5,9 +5,20 @@ import com.apocscode.byteblock.computer.OSEvent;
 import com.apocscode.byteblock.computer.OSProgram;
 import com.apocscode.byteblock.computer.PixelBuffer;
 import com.apocscode.byteblock.computer.TerminalBuffer;
+import com.apocscode.byteblock.block.entity.DriveBlockEntity;
+import com.apocscode.byteblock.network.BluetoothNetwork;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.ArrayList;
+import java.util.Deque;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 
 /**
  * Visual puzzle-piece programming IDE inspired by PneumaticCraft.
@@ -133,6 +144,7 @@ public class PuzzleProgram extends OSProgram {
 
     enum Target { ROBOT, DRONE }
     enum Lang { LUA, JAVA }
+    enum DeployMode { BT_ONLY, DISK_ONLY, BOTH }
 
     // ── UI state machine ────────────────────────────────────
 
@@ -187,6 +199,16 @@ public class PuzzleProgram extends OSProgram {
     private boolean modified = false;
     private String statusMsg = "";
     private int statusTicks = 0;
+    private String lastValidationIssue = "";
+    private DeployMode deployMode = DeployMode.BOTH;
+    private String pendingDeployAckToken = null;
+    private int pendingDeployAckTicks = 0;
+
+    // Pixel-header control hitboxes (updated each frame)
+    private int headerDeployX = -1;
+    private int headerDeployW = 0;
+    private int headerModeX = -1;
+    private int headerModeW = 0;
 
     // Layout constants — PNC-style 3-row puzzle pieces
     private static final int PIECE_H = 3;
@@ -242,6 +264,11 @@ public class PuzzleProgram extends OSProgram {
 
     @Override
     public boolean tick() {
+        processDeployAcks();
+        if (pendingDeployAckToken != null && pendingDeployAckTicks > 0 && --pendingDeployAckTicks == 0) {
+            pendingDeployAckToken = null;
+            setStatus("BT deploy sent (no ACK)");
+        }
         if (statusTicks > 0 && --statusTicks == 0) {}
         return running;
     }
@@ -266,12 +293,15 @@ public class PuzzleProgram extends OSProgram {
                 case 50 -> { lang = Lang.JAVA; finishLangSelect(); }         // 2
                 case 265, 264 -> lang = (lang == Lang.LUA) ? Lang.JAVA : Lang.LUA; // Up/Down toggle
                 case 257, 335 -> finishLangSelect();                         // Enter
+                case 293 -> target = (target == Target.ROBOT) ? Target.DRONE : Target.ROBOT; // F4
                 case 292 -> running = false;                                 // F3 = exit
             }
         } else if (event.getType() == OSEvent.Type.MOUSE_CLICK) {
+            int mx = event.getInt(1);
             int my = event.getInt(2);
-            if (my == 8) { lang = Lang.LUA; finishLangSelect(); }
-            else if (my == 10) { lang = Lang.JAVA; finishLangSelect(); }
+            // Only react when clicking inside the language option rows.
+            if (mx >= 27 && mx <= 53 && my == 8) { lang = Lang.LUA; finishLangSelect(); }
+            else if (mx >= 27 && mx <= 53 && my == 10) { lang = Lang.JAVA; finishLangSelect(); }
         }
     }
 
@@ -333,7 +363,13 @@ public class PuzzleProgram extends OSProgram {
             }
             case 257, 335 -> { // Enter
                 if (paletteFocus) insertFromPalette();
-                else if (selectedPiece != null) startParamEdit(selectedPiece);
+                else if (selectedPiece != null) {
+                    if (selectedPiece.type == PieceType.GOTO_XYZ || selectedPiece.type == PieceType.GPS_SET) {
+                        startGpsPicker(selectedPiece);
+                    } else {
+                        startParamEdit(selectedPiece);
+                    }
+                }
             }
             case 259, 261 -> { // Backspace / Delete
                 if (!paletteFocus && selectedPiece != null
@@ -359,15 +395,41 @@ public class PuzzleProgram extends OSProgram {
             case 296 -> { // F7 = change language
                 mode = Mode.LANG_SELECT;
             }
+            case 297 -> deployProgram();    // F8
+            case 298 -> cycleDeployMode();  // F9
         }
+    }
+
+    private void cycleDeployMode() {
+        deployMode = switch (deployMode) {
+            case BOTH -> DeployMode.BT_ONLY;
+            case BT_ONLY -> DeployMode.DISK_ONLY;
+            case DISK_ONLY -> DeployMode.BOTH;
+        };
+        setStatus("Deploy mode: " + deployMode.name());
     }
 
     private void handleEditClick(int button, int mx, int my) {
         int CW = PixelBuffer.CELL_W, CH = PixelBuffer.CELL_H;
         int mpx = mx * CW, mpy = my * CH;
 
-        // Header / footer
-        if (mpy < PX_HDR_H || mpy >= layoutH - PX_FTR_H) return;
+        // Header click handling (toolbar buttons)
+        if (mpy < PX_HDR_H) {
+            if (button == 0) {
+                if (headerDeployX >= 0 && mpx >= headerDeployX && mpx < headerDeployX + headerDeployW) {
+                    deployProgram();
+                    return;
+                }
+                if (headerModeX >= 0 && mpx >= headerModeX && mpx < headerModeX + headerModeW) {
+                    cycleDeployMode();
+                    return;
+                }
+            }
+            return;
+        }
+
+        // Footer doesn't accept clicks.
+        if (mpy >= layoutH - PX_FTR_H) return;
 
         // Right-click on canvas = delete piece under cursor
         if (button == 1 && mpx < layoutCanvasW) {
@@ -388,6 +450,19 @@ public class PuzzleProgram extends OSProgram {
             int idx = paletteScroll + vy;
             if (idx >= 0 && idx < palette.size() && palette.get(idx) instanceof PieceType) {
                 paletteCursor = idx;
+                if (button == 0) {
+                    PieceType pt = (PieceType) palette.get(idx);
+                    Piece p = new Piece(pt, scrollX + 2, scrollY + 1);
+                    pieces.add(p);
+                    selectedPiece = p;
+                    canvasCursorIdx = pieces.indexOf(p);
+                    draggingPiece = p;
+                    draggingFromPalette = true;
+                    dragOffX = PX_PW / 2;
+                    dragOffY = PX_PH / 2;
+                    paletteFocus = false;
+                    modified = true;
+                }
             }
             return;
         }
@@ -429,12 +504,17 @@ public class PuzzleProgram extends OSProgram {
             draggingPiece.y = Math.max(0, draggingPiece.y);
             rebuildConnections();
             draggingPiece = null;
+            draggingFromPalette = false;
         }
     }
 
     // ── Param edit mode ─────────────────────────────────────
 
     private void startParamEdit(Piece p) {
+        if (p.type == PieceType.GOTO_XYZ || p.type == PieceType.GPS_SET) {
+            startGpsPicker(p);
+            return;
+        }
         if (!p.type.hasParam && p.type != PieceType.LABEL && p.type != PieceType.JUMP) return;
         editingPiece = p;
         paramInput.setLength(0);
@@ -708,20 +788,42 @@ public class PuzzleProgram extends OSProgram {
         return !pieces.isEmpty();
     }
 
-    /** Re-space pieces vertically so 3-row pieces don't overlap (handles old save files) */
+    /**
+     * Re-space pieces only when they physically overlap in the same horizontal lane.
+     * Keeps branch layouts intact instead of flattening everything into one column.
+     */
     private void normalizeLayout() {
         List<Piece> sorted = new ArrayList<>(pieces);
         sorted.sort((a, b) -> a.y != b.y ? Integer.compare(a.y, b.y) : Integer.compare(a.x, b.x));
-        int nextY = 0;
-        for (Piece p : sorted) {
-            if (p.y < nextY) p.y = nextY;
-            nextY = p.y + PIECE_H + 1;
+
+        for (int i = 0; i < sorted.size(); i++) {
+            Piece p = sorted.get(i);
+            boolean moved;
+            do {
+                moved = false;
+                for (int j = 0; j < i; j++) {
+                    Piece q = sorted.get(j);
+                    boolean xOverlap = p.x < q.x + PIECE_W && q.x < p.x + PIECE_W;
+                    boolean yOverlap = p.y < q.y + PIECE_H + 1 && q.y < p.y + PIECE_H + 1;
+                    if (xOverlap && yOverlap) {
+                        p.y = q.y + PIECE_H + 1;
+                        moved = true;
+                    }
+                }
+            } while (moved);
         }
     }
 
     // ── Run / Export ────────────────────────────────────────
 
     private void runProgram() {
+        List<String> errors = validateProgram();
+        if (!errors.isEmpty()) {
+            lastValidationIssue = errors.getFirst();
+            setStatus("Invalid: " + lastValidationIssue);
+            return;
+        }
+
         if (lang == Lang.LUA) {
             String lua = generateLua();
             os.getFileSystem().writeFile("/tmp/_puzzle_run.lua", lua);
@@ -737,12 +839,192 @@ public class PuzzleProgram extends OSProgram {
     }
 
     private void exportCode() {
+        List<String> errors = validateProgram();
+        if (!errors.isEmpty()) {
+            lastValidationIssue = errors.getFirst();
+            setStatus("Invalid: " + lastValidationIssue);
+            return;
+        }
+
         String ext = lang == Lang.LUA ? ".lua" : ".java";
         String outPath = filePath.endsWith(".pzl")
                 ? filePath.replace(".pzl", ext) : filePath + ext;
         String code = lang == Lang.LUA ? generateLua() : generateJava();
         os.getFileSystem().writeFile(outPath, code);
         setStatus("Exported: " + shortPath(outPath));
+    }
+
+    private void deployProgram() {
+        List<String> errors = validateProgram();
+        if (!errors.isEmpty()) {
+            lastValidationIssue = errors.getFirst();
+            setStatus("Invalid: " + lastValidationIssue);
+            return;
+        }
+
+        boolean diskOk = deployMode != DeployMode.BT_ONLY && deployToDisk();
+        boolean btOk = deployMode != DeployMode.DISK_ONLY && deployToBluetooth();
+        if (diskOk && btOk) setStatus("Deployed via BT + disk");
+        else if (btOk) setStatus("Deployed via BT");
+        else if (diskOk) setStatus("Deployed to disk");
+        else setStatus("Deploy failed: no BT target and no disk");
+    }
+
+    private boolean deployToDisk() {
+        DriveBlockEntity drive = findDrive();
+        if (drive == null || !drive.hasDisk()) return false;
+
+        String ext = lang == Lang.LUA ? ".lua" : ".java";
+        String name = deployBaseName() + ext;
+        String path = "/" + name;
+        String content = lang == Lang.LUA ? generateLua() : generateJava();
+        net.neoforged.neoforge.network.PacketDistributor.sendToServer(
+            new com.apocscode.byteblock.network.WriteToDiskPayload(drive.getBlockPos(), path, content, name));
+        return true;
+    }
+
+    private boolean deployToBluetooth() {
+        if (os == null) return false;
+        if (lang != Lang.LUA) {
+            // Only Lua has an executable runtime target today.
+            return false;
+        }
+
+        int ch = os.getBluetoothChannel();
+        String token = Long.toHexString(System.currentTimeMillis());
+        UUID sender = os.getComputerId();
+        if (target == Target.ROBOT) {
+            String path = "/Users/User/Documents/" + deployBaseName() + ".lua";
+            String b64 = Base64.getEncoder().encodeToString(generateLua().getBytes(StandardCharsets.UTF_8));
+            BluetoothNetwork.broadcastFromDevice(os.getComputerId(), ch,
+                    "robot:uploadrun:" + path + ":" + b64 + ":" + sender + ":" + token);
+            pendingDeployAckToken = token;
+            pendingDeployAckTicks = 120;
+            return true;
+        }
+
+        String mission = generateDroneMission();
+        if (mission.isBlank()) return false;
+        String b64 = Base64.getEncoder().encodeToString(mission.getBytes(StandardCharsets.UTF_8));
+        BluetoothNetwork.broadcastFromDevice(os.getComputerId(), ch,
+                "drone:mission:" + b64 + ":" + sender + ":" + token);
+        pendingDeployAckToken = token;
+        pendingDeployAckTicks = 120;
+        return true;
+    }
+
+    private String deployBaseName() {
+        String raw = shortPath(filePath == null ? "program" : filePath);
+        int slash = raw.lastIndexOf('/');
+        if (slash >= 0) raw = raw.substring(slash + 1);
+        int dot = raw.lastIndexOf('.');
+        if (dot > 0) raw = raw.substring(0, dot);
+        if (raw.isBlank()) raw = "program";
+        String safe = raw.replaceAll("[^A-Za-z0-9._-]", "_");
+        return "puzzle_" + safe;
+    }
+
+    private DriveBlockEntity findDrive() {
+        java.util.Map<Character, DriveBlockEntity> drives = os.getMountedDrives();
+        if (!drives.isEmpty()) return drives.values().iterator().next();
+        return null;
+    }
+
+    private String generateDroneMission() {
+        List<Piece> flow = buildFlowOrder();
+        Map<String, Integer> labelIds = new LinkedHashMap<>();
+        int nextLabelId = 0;
+
+        for (Piece p : flow) {
+            if (p.type == PieceType.LABEL && p.paramStr != null) {
+                String name = p.paramStr.trim();
+                if (!name.isEmpty() && !labelIds.containsKey(name)) {
+                    labelIds.put(name, nextLabelId++);
+                }
+            }
+        }
+
+        StringBuilder sb = new StringBuilder();
+        for (Piece p : flow) {
+            switch (p.type) {
+                case GOTO_XYZ -> {
+                    int[] xyz = parseXYZ(p.paramStr);
+                    if (xyz != null) {
+                        sb.append("drone:waypoint:")
+                          .append(xyz[0]).append(':')
+                          .append(xyz[1]).append(':')
+                          .append(xyz[2]).append('\n');
+                    }
+                }
+                case HOVER -> sb.append("drone:hover:true\n");
+                case LAND -> sb.append("drone:hover:false\n");
+                case WAIT -> sb.append("drone:wait:").append(Math.max(1, p.param)).append('\n');
+                case REPEAT -> sb.append("drone:repeat:").append(Math.max(0, p.param)).append('\n');
+                case END_REPEAT -> sb.append("drone:end_repeat\n");
+                case IF_FUEL -> sb.append("drone:if_fuel_gt:").append(Math.max(0, p.param)).append('\n');
+                case ELSE -> sb.append("drone:else\n");
+                case END_IF -> sb.append("drone:end_if\n");
+                case LABEL -> {
+                    if (p.paramStr != null) {
+                        Integer id = labelIds.get(p.paramStr.trim());
+                        if (id != null) sb.append("drone:label:").append(id).append('\n');
+                    }
+                }
+                case JUMP -> {
+                    if (p.paramStr != null) {
+                        Integer id = labelIds.get(p.paramStr.trim());
+                        if (id != null) sb.append("drone:jump:").append(id).append('\n');
+                    }
+                }
+                case GPS_SET -> {
+                    int[] xyz = parseXYZ(p.paramStr);
+                    if (xyz != null) {
+                        sb.append("drone:setHome:")
+                          .append(xyz[0]).append(':')
+                          .append(xyz[1]).append(':')
+                          .append(xyz[2]).append('\n');
+                    }
+                }
+                default -> {}
+            }
+        }
+        return sb.toString();
+    }
+
+    private void processDeployAcks() {
+        if (os == null) return;
+        com.apocscode.byteblock.network.BluetoothNetwork.Message msg;
+        while ((msg = BluetoothNetwork.receive(os.getComputerId())) != null) {
+            String raw = msg.content();
+            if (raw == null || !raw.startsWith("puzzle:ack:")) continue;
+            String[] parts = raw.split(":", 5);
+            if (parts.length < 5) continue;
+            String token = parts[3];
+            if (pendingDeployAckToken != null && pendingDeployAckToken.equals(token)) {
+                pendingDeployAckToken = null;
+                pendingDeployAckTicks = 0;
+                String source = parts[2];
+                String state = parts[4];
+                if ("ok".equalsIgnoreCase(state)) setStatus("BT ACK from " + source);
+                else setStatus("BT error from " + source + ": " + state);
+                return;
+            }
+        }
+    }
+
+    private int[] parseXYZ(String s) {
+        if (s == null || s.isBlank()) return null;
+        String[] parts = s.split(",");
+        if (parts.length != 3) return null;
+        try {
+            return new int[] {
+                Integer.parseInt(parts[0].trim()),
+                Integer.parseInt(parts[1].trim()),
+                Integer.parseInt(parts[2].trim())
+            };
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     /** Build ordered flow list by following output connections from START */
@@ -752,11 +1034,97 @@ public class PuzzleProgram extends OSProgram {
         for (Piece p : pieces) {
             if (p.type == PieceType.START) { current = p; break; }
         }
-        while (current != null && flow.size() < pieces.size() + 1) {
+        Set<Piece> visited = new HashSet<>();
+        while (current != null && !visited.contains(current) && flow.size() < pieces.size() + 1) {
+            visited.add(current);
             flow.add(current);
             current = current.outputConnection;
         }
+
+        // Keep generation resilient: append remaining pieces by visual order
+        // if connectors are incomplete.
+        if (flow.size() < pieces.size()) {
+            List<Piece> rest = new ArrayList<>(pieces);
+            rest.sort((a, b) -> a.y != b.y ? Integer.compare(a.y, b.y) : Integer.compare(a.x, b.x));
+            for (Piece p : rest) {
+                if (!visited.contains(p)) flow.add(p);
+            }
+        }
         return flow;
+    }
+
+    private List<String> validateProgram() {
+        List<String> errors = new ArrayList<>();
+        Piece start = null;
+        for (Piece p : pieces) {
+            if (p.type == PieceType.START) { start = p; break; }
+        }
+        if (start == null) errors.add("Missing START piece");
+
+        List<Piece> flow = buildFlowOrder();
+        List<String> stack = new ArrayList<>();
+        Set<String> labels = new HashSet<>();
+        Set<String> jumps = new HashSet<>();
+
+        for (Piece p : flow) {
+            switch (p.type) {
+                case REPEAT -> stack.add("REPEAT");
+                case END_REPEAT -> {
+                    if (stack.isEmpty() || !"REPEAT".equals(stack.getLast())) {
+                        errors.add("END_REPEAT without matching REPEAT");
+                    } else stack.removeLast();
+                }
+                case IF_DETECT, IF_FUEL -> stack.add("IF");
+                case ELSE -> {
+                    if (stack.isEmpty() || !"IF".equals(stack.getLast())) {
+                        errors.add("ELSE without matching IF");
+                    }
+                }
+                case END_IF -> {
+                    if (stack.isEmpty() || !"IF".equals(stack.getLast())) {
+                        errors.add("END_IF without matching IF");
+                    } else stack.removeLast();
+                }
+                case LABEL -> {
+                    String name = p.paramStr == null ? "" : p.paramStr.trim();
+                    if (name.isBlank()) errors.add("LABEL requires a name");
+                    else labels.add(name);
+                }
+                case JUMP -> {
+                    String name = p.paramStr == null ? "" : p.paramStr.trim();
+                    if (name.isBlank()) errors.add("JUMP requires a label name");
+                    else jumps.add(name);
+                }
+                case GOTO_XYZ, GPS_SET -> {
+                    if (parseXYZ(p.paramStr) == null) {
+                        errors.add(p.type.label + " requires X,Y,Z");
+                    }
+                }
+                default -> {}
+            }
+        }
+
+        if (!stack.isEmpty()) errors.add("Unclosed block: " + stack.getLast());
+        for (String j : jumps) {
+            if (!labels.contains(j)) errors.add("JUMP target not found: " + j);
+        }
+
+        // Detect visually orphaned pieces (not reachable from START via outputs).
+        if (start != null) {
+            Set<Piece> reachable = new HashSet<>();
+            Piece cur = start;
+            while (cur != null && !reachable.contains(cur)) {
+                reachable.add(cur);
+                cur = cur.outputConnection;
+            }
+            for (Piece p : pieces) {
+                if (!reachable.contains(p)) {
+                    errors.add("Unlinked piece: " + p.type.label);
+                    break;
+                }
+            }
+        }
+        return errors;
     }
 
     private String generateLua() {
@@ -805,8 +1173,14 @@ public class PuzzleProgram extends OSProgram {
                 case HOVER      -> sb.append(pre).append("drone.hover()\n");
                 case LAND       -> sb.append(pre).append("drone.land()\n");
                 case GPS_SET    -> sb.append(pre).append("gps.set(").append(p.paramStr.isEmpty() ? "0,64,0" : p.paramStr).append(")\n");
-                case LABEL      -> sb.append(pre).append("-- label: ").append(p.paramStr).append("\n");
-                case JUMP       -> sb.append(pre).append("-- jump: ").append(p.paramStr).append("\n");
+                case LABEL      -> {
+                    String label = sanitizeLabel(p.paramStr);
+                    if (!label.isEmpty()) sb.append(pre).append("::").append(label).append("::\n");
+                }
+                case JUMP       -> {
+                    String label = sanitizeLabel(p.paramStr);
+                    if (!label.isEmpty()) sb.append(pre).append("goto ").append(label).append("\n");
+                }
                 case DETECT     -> sb.append(pre).append("local _det = robot.detect()\n");
                 case FUEL_LVL   -> sb.append(pre).append("local _fuel = ").append(api).append(".getFuel()\n");
                 case COMPARE    -> sb.append(pre).append("local _cmp = robot.compare()\n");
@@ -912,6 +1286,8 @@ public class PuzzleProgram extends OSProgram {
     private static final int PX_DIVIDER   = 0xFF303050;
     private static final int PX_DIALOG    = 0xFF1E1E3A;
     private static final int PX_CONN_LINE = 0xFF505070;
+    private static final int PX_BTN_GREEN = 0xFF2ECC71;
+    private static final int PX_BTN_BLUE  = 0xFF42A5F5;
 
     private static int pieceArgb(int paletteIdx) {
         return switch (paletteIdx) {
@@ -1019,10 +1395,35 @@ public class PuzzleProgram extends OSProgram {
         pb.drawVLine(60, 2, PX_HDR_H - 2, PX_DIVIDER);
         String info = shortPath(filePath) + (modified ? "*" : "")
                 + " [" + target.name() + "/" + lang.name() + "]";
-        pb.drawString(64, 1, clip(info, (W - 200) / 8), PX_TEXT_DIM);
+        pb.drawString(64, 1, clip(info, (W - 280) / 8), PX_TEXT_DIM);
+
+        // Clickable deploy controls
+        String modeBtn = "MODE:" + deployMode.name();
+        String depBtn = "DEPLOY";
+        int depW = depBtn.length() * 8 + 10;
+        int modeW = modeBtn.length() * 8 + 10;
+        int depX = W - depW - 8;
+        int modeX = depX - modeW - 6;
+        int btnY = 2;
+        int btnH = PX_HDR_H - 4;
+
+        headerDeployX = depX;
+        headerDeployW = depW;
+        headerModeX = modeX;
+        headerModeW = modeW;
+
+        pb.fillRoundRect(modeX, btnY, modeW, btnH, 3, darken(PX_BTN_BLUE, 0.70f));
+        pb.drawRect(modeX, btnY, modeW, btnH, PX_BTN_BLUE);
+        pb.drawString(modeX + 5, 1, modeBtn, PX_TEXT);
+
+        pb.fillRoundRect(depX, btnY, depW, btnH, 3, darken(PX_BTN_GREEN, 0.70f));
+        pb.drawRect(depX, btnY, depW, btnH, PX_BTN_GREEN);
+        pb.drawString(depX + 5, 1, depBtn, 0xFFFFFFFF);
+
         // Hotkey hints on the right
-        String keys = "F1\u25B6 F2\u2261 F3\u2717 F4\u2699 F5\u2191";
-        pb.drawString(W - keys.length() * 8 - 4, 1, keys, PX_TEXT_DIM);
+        String keys = "F1\u25B6 F2\u2261 F3\u2717 F4\u2699 F5\u2191 F8\u21E7 F9\u27F3";
+        int keyX = Math.max(64, modeX - keys.length() * 8 - 8);
+        pb.drawString(keyX, 1, keys, PX_TEXT_DIM);
 
         renderCanvasPx(pb, 0, PX_HDR_H, canvasW, canvasH);
         renderPalettePx(pb, canvasW, PX_HDR_H, palW, canvasH);
@@ -1186,9 +1587,9 @@ public class PuzzleProgram extends OSProgram {
             foot = " " + statusMsg;
         } else if (selectedPiece != null && (selectedPiece.type == PieceType.GOTO_XYZ
                 || selectedPiece.type == PieceType.GPS_SET)) {
-            foot = " Tab:\u2194 Enter:Edit Del:Rm F6:GPS";
+            foot = " Tab:\u2194 Enter:Edit Del:Rm F6:GPS F8:Deploy F9:Mode(" + deployMode.name() + ")";
         } else {
-            foot = " Tab:\u2194 Enter:Edit Del:Rm F2:Save F4:Tgt";
+            foot = " Tab:\u2194 Enter:Edit Del:Rm F2:Save F4:Tgt F8:Deploy F9:Mode(" + deployMode.name() + ")";
         }
         pb.drawString(fx + 2, fy - 1, clip(foot, fw / 8), footColor);
     }
@@ -1337,7 +1738,7 @@ public class PuzzleProgram extends OSProgram {
         buf.setTextColor(7);
         buf.writeAt(45, 0, "\u2502");
         buf.setTextColor(0);
-        buf.writeAt(47, 0, "F1\u25B6 F2\u2261 F3\u2717 F4\u2699 F5\u2191 F7\u266A");
+        buf.writeAt(47, 0, "F1\u25B6 F2\u2261 F3\u2717 F4\u2699 F5\u2191 F7\u266A F8\u21E7 F9\u27F3");
 
         renderPalette(buf);
         renderCanvas(buf);
@@ -1540,9 +1941,9 @@ public class PuzzleProgram extends OSProgram {
             foot = " " + statusMsg;
         } else if (selectedPiece != null && (selectedPiece.type == PieceType.GOTO_XYZ
                 || selectedPiece.type == PieceType.GPS_SET)) {
-            foot = " Tab:\u2194 Enter:Edit Del:Rm F2:Save F5:" + lang.name() + " F6:GPS";
+            foot = " Tab:\u2194 Enter:Edit Del:Rm F2:Save F5:" + lang.name() + " F6:GPS F8:Deploy F9:" + deployMode.name();
         } else {
-            foot = " Tab:\u2194 Enter:Edit Del:Rm F2:Save F4:Tgt F5:" + lang.name();
+            foot = " Tab:\u2194 Enter:Edit Del:Rm F2:Save F4:Tgt F5:" + lang.name() + " F8:Deploy F9:" + deployMode.name();
         }
         buf.writeAt(0, TerminalBuffer.HEIGHT - 1, clip(foot, TerminalBuffer.WIDTH));
     }
@@ -1679,5 +2080,13 @@ public class PuzzleProgram extends OSProgram {
 
     private String clip(String s, int max) {
         return max <= 0 ? "" : (s.length() <= max ? s : s.substring(0, max));
+    }
+
+    private String sanitizeLabel(String raw) {
+        if (raw == null) return "";
+        String s = raw.trim().replaceAll("[^A-Za-z0-9_]", "_");
+        if (s.isEmpty()) return "";
+        if (Character.isDigit(s.charAt(0))) s = "L_" + s;
+        return s;
     }
 }

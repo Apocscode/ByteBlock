@@ -5,6 +5,7 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.math.Axis;
 
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.entity.EntityRenderer;
@@ -475,19 +476,57 @@ public class RobotRenderer extends EntityRenderer<RobotEntity> {
 
     @Override
     protected void renderNameTag(RobotEntity entity, net.minecraft.network.chat.Component displayName,
-                                  PoseStack poseStack, net.minecraft.client.renderer.MultiBufferSource buffer,
+                                  PoseStack poseStack, MultiBufferSource buffer,
                                   int packedLight, float partialTick) {
-        // Top line — vanilla custom name (only when player has named it via Name Tag).
-        if (entity.hasCustomName()) {
-            super.renderNameTag(entity, displayName, poseStack, buffer, packedLight, partialTick);
-        }
-        // Second line — health + charge stats, drawn slightly below the custom name (or at
-        // the normal name position if there is no custom name).
+        if (this.entityRenderDispatcher.distanceToSqr(entity) > 4096.0) return;
+
+        Font font = this.getFont();
+        boolean hasName = entity.hasCustomName();
+        net.minecraft.network.chat.Component stats = entity.getStatsLine();
+
+        int nameW  = hasName ? font.width(displayName) : 0;
+        int statsW = font.width(stats);
+        int panelW = Math.max(nameW, statsW) + 8; // 4px padding each side
+
+        // Font-pixel Y (y=0 at nameTagOffsetY; positive y = lower on screen).
+        // Name is at the top (y=0), stats 11px below (matching vanilla 0.27-block gap).
+        float nameY  = 0f;
+        float statsY = hasName ? 11f : 0f;
+
+        float panelTop    = (hasName ? nameY : statsY) - 4f;  // 4px above first line
+        float accentBot   = panelTop + 2f;                     // 2px accent strip
+        float panelBottom = statsY + 10f;                      // 2px below stats text
+
         poseStack.pushPose();
-        if (entity.hasCustomName()) {
-            poseStack.translate(0.0, -0.27, 0.0);
+        poseStack.translate(0.0, entity.getBbHeight() + 0.5f, 0.0);
+        poseStack.mulPose(this.entityRenderDispatcher.cameraOrientation());
+        poseStack.scale(0.009f, -0.009f, 0.009f);
+        Matrix4f mat = poseStack.last().pose();
+
+        float left  = -panelW / 2f;
+        float right =  panelW / 2f;
+
+        // Background panel — two non-overlapping quads (no z-fighting).
+        VertexConsumer bg = buffer.getBuffer(RenderType.textBackground());
+        // Top accent strip (robot trim cyan #28C8E6), submitted first.
+        bg.addVertex(mat, left,  panelTop, 0f).setColor(0xFF28C8E6).setLight(packedLight);
+        bg.addVertex(mat, left,  accentBot, 0f).setColor(0xFF28C8E6).setLight(packedLight);
+        bg.addVertex(mat, right, accentBot, 0f).setColor(0xFF28C8E6).setLight(packedLight);
+        bg.addVertex(mat, right, panelTop,  0f).setColor(0xFF28C8E6).setLight(packedLight);
+        // Dark body below accent strip.
+        bg.addVertex(mat, left,  accentBot,   0f).setColor(0xB8101010).setLight(packedLight);
+        bg.addVertex(mat, left,  panelBottom, 0f).setColor(0xB8101010).setLight(packedLight);
+        bg.addVertex(mat, right, panelBottom, 0f).setColor(0xB8101010).setLight(packedLight);
+        bg.addVertex(mat, right, accentBot,   0f).setColor(0xB8101010).setLight(packedLight);
+
+        // Text — bgColor=0 so the font does not draw its own background rect.
+        if (hasName) {
+            font.drawInBatch(displayName, -nameW / 2f, nameY, 0xFFFFFF, false, mat, buffer,
+                             Font.DisplayMode.NORMAL, 0, packedLight);
         }
-        super.renderNameTag(entity, entity.getStatsLine(), poseStack, buffer, packedLight, partialTick);
+        font.drawInBatch(stats, -statsW / 2f, statsY, 0xFFFFFF, false, mat, buffer,
+                         Font.DisplayMode.NORMAL, 0, packedLight);
+
         poseStack.popPose();
     }
 

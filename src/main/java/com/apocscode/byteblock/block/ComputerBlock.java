@@ -70,7 +70,7 @@ public class ComputerBlock extends Block implements EntityBlock {
             if (be instanceof ComputerBlockEntity computer) {
                 com.apocscode.byteblock.computer.JavaOS os = computer.getOS();
                 if (os.isShutdown()) {
-                    os.reboot();
+                    os.restartSilent();
                 }
                 net.minecraft.client.Minecraft.getInstance().setScreen(
                     new com.apocscode.byteblock.client.ComputerScreen(os));

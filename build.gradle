@@ -67,6 +67,9 @@ configurations {
 
 dependencies {
     implementation "net.neoforged:neoforge:${neo_version}"
+    // AE2 - compile-only so we can implement IInWorldGridNodeHost for cable visual connections.
+    // The jar is present in the dev run but NOT bundled; guarded by ModList.get().isLoaded("ae2") at runtime.
+    compileOnly files('runs/client/mods/appliedenergistics2-19.2.17.jar')
     // LuaJ — pure-Java Lua 5.2 interpreter (shadow-relocated to avoid conflicts)
     implementation "org.luaj:luaj-jse:3.0.1"
     shadow "org.luaj:luaj-jse:3.0.1"

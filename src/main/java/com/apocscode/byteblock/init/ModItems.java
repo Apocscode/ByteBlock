@@ -4,6 +4,7 @@ import com.apocscode.byteblock.ByteBlock;
 import com.apocscode.byteblock.item.DiskItem;
 import com.apocscode.byteblock.item.GlassesItem;
 import com.apocscode.byteblock.item.GpsToolItem;
+import com.apocscode.byteblock.item.UpgradeCard;
 
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.Item;
@@ -54,6 +55,26 @@ public class ModItems {
     // Redstone blocks
     public static final DeferredItem<BlockItem> REDSTONE_RELAY_ITEM = ITEMS.registerSimpleBlockItem("redstone_relay", ModBlocks.REDSTONE_RELAY);
     public static final DeferredItem<BlockItem> BUTTON_PANEL_ITEM = ITEMS.registerSimpleBlockItem("button_panel", ModBlocks.BUTTON_PANEL);
+
+    // Upgrade Cards
+    public static final DeferredItem<UpgradeCard> UPGRADE_RANGE_I =
+            ITEMS.register("upgrade_range_1",
+                    () -> new UpgradeCard(UpgradeCard.Type.RANGE_I, new Item.Properties().stacksTo(1)));
+    public static final DeferredItem<UpgradeCard> UPGRADE_RANGE_II =
+            ITEMS.register("upgrade_range_2",
+                    () -> new UpgradeCard(UpgradeCard.Type.RANGE_II, new Item.Properties().stacksTo(1)));
+    public static final DeferredItem<UpgradeCard> UPGRADE_RANGE_CREATIVE =
+            ITEMS.register("upgrade_range_creative",
+                    () -> new UpgradeCard(UpgradeCard.Type.RANGE_CREATIVE, new Item.Properties().stacksTo(1)));
+    public static final DeferredItem<UpgradeCard> UPGRADE_SPEED =
+            ITEMS.register("upgrade_speed",
+                    () -> new UpgradeCard(UpgradeCard.Type.SPEED, new Item.Properties().stacksTo(1)));
+    public static final DeferredItem<UpgradeCard> UPGRADE_INVENTORY =
+            ITEMS.register("upgrade_inventory",
+                    () -> new UpgradeCard(UpgradeCard.Type.INVENTORY, new Item.Properties().stacksTo(1)));
+    public static final DeferredItem<UpgradeCard> UPGRADE_LASER =
+            ITEMS.register("upgrade_laser",
+                    () -> new UpgradeCard(UpgradeCard.Type.LASER, new Item.Properties().stacksTo(1)));
 
     // ByteChest
     public static final DeferredItem<BlockItem> BYTE_CHEST_ITEM = ITEMS.registerSimpleBlockItem("byte_chest", ModBlocks.BYTE_CHEST);

@@ -359,7 +359,11 @@ public class VirtualFileSystem {
             }
             tag.put("children", childrenTag);
         } else {
-            tag.putString("content", node.content != null ? node.content : "");
+            // Store file content as UTF-8 byte array to avoid Java's 65,535-byte
+            // modified-UTF-8 limit on NBT strings (DataOutputStream.writeUTF).
+            byte[] bytes = (node.content != null ? node.content : "")
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            tag.putByteArray("contentBytes", bytes);
         }
         return tag;
     }
@@ -377,7 +381,13 @@ public class VirtualFileSystem {
                 }
             }
         } else {
-            node.content = tag.getString("content");
+            // Support both old string format and new byte-array format.
+            if (tag.contains("contentBytes", Tag.TAG_BYTE_ARRAY)) {
+                byte[] bytes = tag.getByteArray("contentBytes");
+                node.content = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+            } else {
+                node.content = tag.getString("content");
+            }
         }
     }
 

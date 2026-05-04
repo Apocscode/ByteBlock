@@ -1,6 +1,7 @@
 package com.apocscode.byteblock.block.entity;
 
 import com.apocscode.byteblock.block.ByteChestBlock;
+import com.apocscode.byteblock.compat.Ae2GridNodeBridge;
 import com.apocscode.byteblock.init.ModBlockEntities;
 import com.apocscode.byteblock.network.BluetoothNetwork;
 
@@ -20,6 +21,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.RandomizableContainerBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.neoforged.fml.ModList;
 
 import java.util.UUID;
 
@@ -45,9 +47,20 @@ public class ByteChestBlockEntity extends RandomizableContainerBlockEntity {
     public static final java.util.Set<ByteChestBlockEntity> CLIENT_LOADED =
             java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
 
+    // AE2 grid node — allows cables to visually connect to this block.
+    @javax.annotation.Nullable
+    private Ae2GridNodeBridge ae2Bridge = null;
+
     public ByteChestBlockEntity(BlockPos pos, BlockState state) {
         super(ModBlockEntities.BYTE_CHEST.get(), pos, state);
+        if (ModList.get().isLoaded("ae2")) {
+            ae2Bridge = new Ae2GridNodeBridge(this);
+        }
     }
+
+    /** Returns the AE2 grid node host (used by capability registration). */
+    @javax.annotation.Nullable
+    public Ae2GridNodeBridge getAe2Bridge() { return ae2Bridge; }
 
     // ── Server tick: keep BT registration alive ───────────────────────────────
 
@@ -137,6 +150,7 @@ public class ByteChestBlockEntity extends RandomizableContainerBlockEntity {
         tag.putString("deviceId", deviceId.toString());
         if (!label.isEmpty()) tag.putString("Label", label);
         if (tint != 0xFFFFFF) tag.putInt("Tint", tint);
+        if (ae2Bridge != null) ae2Bridge.saveToNBT(tag);
     }
 
     @Override
@@ -153,6 +167,7 @@ public class ByteChestBlockEntity extends RandomizableContainerBlockEntity {
         }
         label = tag.contains("Label") ? tag.getString("Label") : "";
         tint = tag.contains("Tint") ? (tag.getInt("Tint") & 0xFFFFFF) : 0xFFFFFF;
+        if (ae2Bridge != null) ae2Bridge.loadFromNBT(tag);
     }
 
     // ── Client sync (label needs to render on the chest popup HUD) ────────────
@@ -197,6 +212,9 @@ public class ByteChestBlockEntity extends RandomizableContainerBlockEntity {
     public void onLoad() {
         super.onLoad();
         if (level != null && level.isClientSide()) CLIENT_LOADED.add(this);
+        if (ae2Bridge != null && level != null && !level.isClientSide()) {
+            ae2Bridge.create(level, worldPosition);
+        }
     }
 
     @Override
@@ -209,5 +227,6 @@ public class ByteChestBlockEntity extends RandomizableContainerBlockEntity {
     public void setRemoved() {
         super.setRemoved();
         if (level != null && level.isClientSide()) CLIENT_LOADED.remove(this);
+        if (ae2Bridge != null) ae2Bridge.destroy();
     }
 }

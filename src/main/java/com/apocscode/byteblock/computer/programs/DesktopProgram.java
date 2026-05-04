@@ -865,8 +865,15 @@ public class DesktopProgram extends OSProgram {
 
         // Footer clicks
         if (py >= footY) {
-            if (px < smX + smW / 2) {
+            int colW = smW / 3;
+            if (px < smX + colW) {
                 launchByTarget("builtin:settings");
+            } else if (px < smX + colW * 2) {
+                // Open GitHub issues/feedback page in the system browser
+                try {
+                    net.minecraft.Util.getPlatform().openUri(
+                        java.net.URI.create("https://github.com/Apocscode/ByteBlock/issues/new/choose"));
+                } catch (Exception ignored) {}
             } else {
                 os.shutdown();
             }
@@ -1704,17 +1711,26 @@ public class DesktopProgram extends OSProgram {
             pb.drawString(rightX + 24, iy + 4, START_RIGHT[i], 0xFF333344);
         }
 
-        // Footer bar (Settings | Shutdown)
+        // Footer bar (Settings | Report Bug | Shutdown)
         int footY = smY + smH - footerH;
         pb.fillRect(smX, footY, smW, footerH, 0xFFDDDDEE);
         pb.drawHLine(smX, smX + smW - 1, footY, 0xFFBBBBCC);
+        int colW = smW / 3;
         // Settings button
-        SystemIcons.draw(pb, smX + 8, footY + 6, SystemIcons.Icon.SETTINGS);
-        pb.drawString(smX + 28, footY + 7, "Settings", 0xFF444444);
+        SystemIcons.draw(pb, smX + 4, footY + 6, SystemIcons.Icon.SETTINGS);
+        pb.drawString(smX + 22, footY + 7, "Settings", 0xFF444444);
+        // Divider
+        pb.drawVLine(smX + colW, footY + 2, footY + footerH - 3, 0xFFBBBBCC);
+        // Report Bug button
+        int bugX = smX + colW;
+        SystemIcons.draw(pb, bugX + 4, footY + 6, SystemIcons.Icon.NOTEPAD);
+        pb.drawString(bugX + 22, footY + 7, "Feedback", 0xFF444444);
+        // Divider
+        pb.drawVLine(smX + colW * 2, footY + 2, footY + footerH - 3, 0xFFBBBBCC);
         // Shutdown button
-        int shutX = smX + smW / 2;
-        SystemIcons.draw(pb, shutX + 8, footY + 6, SystemIcons.Icon.SHUTDOWN);
-        pb.drawString(shutX + 28, footY + 7, "Shut Down", 0xFF444444);
+        int shutX = smX + colW * 2;
+        SystemIcons.draw(pb, shutX + 4, footY + 6, SystemIcons.Icon.SHUTDOWN);
+        pb.drawString(shutX + 22, footY + 7, "Shut Down", 0xFF444444);
     }
 
     private void renderWizardPx(PixelBuffer pb) {

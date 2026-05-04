@@ -1,6 +1,9 @@
 package com.apocscode.byteblock.client;
 
 import com.apocscode.byteblock.menu.RobotMenu;
+import com.apocscode.byteblock.network.PackUpEntityPayload;
+import com.apocscode.byteblock.network.SetChargePadPayload;
+import com.apocscode.byteblock.network.SetEntityChannelPayload;
 import com.apocscode.byteblock.network.SetEntityLabelPayload;
 import com.apocscode.byteblock.network.SetEntityMutePayload;
 
@@ -52,11 +55,10 @@ public class RobotScreen extends AbstractContainerScreen<RobotMenu> {
         addRenderableWidget(Button.builder(Component.literal("Paint"),
                 b -> this.minecraft.setScreen(new RobotCustomizeScreen(menu.getRobot())))
             .pos(leftPos + 6, headerY)
-            .size(60, 18)
+            .size(48, 18)
             .build());
 
-        // Mute toggle — single Button with label that reflects current state. Bigger
-        // hit-box than a Checkbox and not crammed into a corner.
+        // Mute toggle
         Button muteBtn = Button.builder(
                 Component.literal(menu.getRobot().isMuted() ? "Sound: OFF" : "Sound: ON"),
                 b -> {
@@ -66,10 +68,24 @@ public class RobotScreen extends AbstractContainerScreen<RobotMenu> {
                     PacketDistributor.sendToServer(
                         new SetEntityMutePayload(menu.getRobot().getId(), newState));
                 })
-            .pos(leftPos + 70, headerY)
-            .size(80, 18)
+            .pos(leftPos + 56, headerY)
+            .size(66, 18)
             .build();
         addRenderableWidget(muteBtn);
+
+        // Pack Up — serialise entity into spawn egg and remove it from the world
+        addRenderableWidget(Button.builder(Component.literal("Pack Up"),
+                b -> PacketDistributor.sendToServer(new PackUpEntityPayload(menu.getRobot().getId())))
+            .pos(leftPos + 124, headerY)
+            .size(46, 18)
+            .build());
+
+        // Set Charge Pad — second header row, scans for nearest pad and pins it
+        addRenderableWidget(Button.builder(Component.literal("Set Charge Pad"),
+                b -> PacketDistributor.sendToServer(new SetChargePadPayload(menu.getRobot().getId())))
+            .pos(leftPos + 6, headerY - 20)
+            .size(164, 18)
+            .build());
     }
 
     @Override
@@ -102,12 +118,18 @@ public class RobotScreen extends AbstractContainerScreen<RobotMenu> {
         int x = leftPos;
         int y = topPos;
 
-        // Floating header panel (Paint / Sound buttons live here, drawn above main frame)
-        int hY = y - 24;
-        gui.fill(x, hY, x + imageWidth, hY + 22, 0xFFC6C6C6);
+        // Floating header panel (Paint / Sound / Set Charge Pad buttons live here, drawn above main frame)
+        int hY = y - 64;
+        gui.fill(x, hY, x + imageWidth, hY + 62, 0xFFC6C6C6);
         gui.fill(x, hY, x + imageWidth, hY + 1, 0xFFFFFFFF);
-        gui.fill(x, hY, x + 1, hY + 22, 0xFFFFFFFF);
-        gui.fill(x + imageWidth - 1, hY, x + imageWidth, hY + 22, 0xFF555555);
+        gui.fill(x, hY, x + 1, hY + 62, 0xFFFFFFFF);
+        gui.fill(x + imageWidth - 1, hY, x + imageWidth, hY + 62, 0xFF555555);
+        // Separator below channel row.
+        gui.fill(x + 1, hY + 18, x + imageWidth - 1, hY + 19, 0xFF999999);
+        // Channel widget at top of header.
+        int ch = menu.getRobot().getSyncedBluetoothChannel();
+        gui.drawString(font, "Channel:", x + 8, hY + 4, 0xFF404040, false);
+        drawChannelWidget(gui, x + 62, hY + 2, ch);
 
         // Background
         gui.fill(x, y, x + imageWidth, y + imageHeight, 0xFFC6C6C6);
@@ -138,12 +160,18 @@ public class RobotScreen extends AbstractContainerScreen<RobotMenu> {
         gui.drawString(font, "G", x + 26, y + 58, 0xFF404040, false);
         gui.drawString(font, "FE", x + 26, y + 76, 0xFF404040, false);
 
+        // Upgrade slots (right column, beside energy bar)
+        for (int i = 0; i < 4; i++) {
+            renderSlotBg(gui, x + 151, y + 17 + i * 18);
+        }
+        gui.drawString(font, "UP", x + 153, y + 5, 0xFF404040, false);
+
         // Energy bar — right side of cargo grid
         int barX = x + 138, barY = y + 17, barW = 10, barH = 72;
         gui.fill(barX, barY, barX + barW, barY + barH, 0xFF373737);
-        var energy = menu.getRobot().getEnergyStorage();
-        int max = Math.max(1, energy.getMaxEnergyStored());
-        int pct = energy.getEnergyStored() * barH / max;
+        int stored = menu.getSyncedEnergy();
+        int max = menu.getSyncedMaxEnergy();
+        int pct = stored * barH / max;
         // Draw the bar with a vertical 5-stop gradient: red < 10% → orange → yellow →
         // light green → green at full. The fill is clipped to the current charge level.
         for (int i = 0; i < pct; i++) {
@@ -175,6 +203,17 @@ public class RobotScreen extends AbstractContainerScreen<RobotMenu> {
         gui.fill(x + 1, y + 1, x + 17, y + 17, 0xFF8B8B8B);
     }
 
+    /** Renders a small [-] CH:N [+] widget at (cwX, cwY) — 52×10 px. */
+    private void drawChannelWidget(GuiGraphics gui, int cwX, int cwY, int ch) {
+        gui.fill(cwX, cwY, cwX + 10, cwY + 10, 0xFF555555);
+        gui.fill(cwX + 1, cwY + 1, cwX + 9, cwY + 9, 0xFF777777);
+        gui.drawString(font, "-", cwX + 2, cwY + 1, 0xFFFFFFFF, false);
+        gui.drawString(font, "CH:" + ch, cwX + 13, cwY + 1, 0xFF404040, false);
+        gui.fill(cwX + 42, cwY, cwX + 52, cwY + 10, 0xFF555555);
+        gui.fill(cwX + 43, cwY + 1, cwX + 51, cwY + 9, 0xFF777777);
+        gui.drawString(font, "+", cwX + 44, cwY + 1, 0xFFFFFFFF, false);
+    }
+
     @Override
     protected void renderLabels(GuiGraphics gui, int mouseX, int mouseY) {
         // Draw inventory label only — title is replaced by the EditBox.
@@ -187,9 +226,8 @@ public class RobotScreen extends AbstractContainerScreen<RobotMenu> {
         // Energy tooltip
         int barX = leftPos + 138, barY = topPos + 17;
         if (mouseX >= barX && mouseX < barX + 10 && mouseY >= barY && mouseY < barY + 72) {
-            var e = menu.getRobot().getEnergyStorage();
             gui.renderTooltip(this.font,
-                Component.literal(e.getEnergyStored() + " / " + e.getMaxEnergyStored() + " FE"),
+                Component.literal(menu.getSyncedEnergy() + " / " + menu.getSyncedMaxEnergy() + " FE"),
                 mouseX, mouseY);
         }
         renderTooltip(gui, mouseX, mouseY);
@@ -197,6 +235,20 @@ public class RobotScreen extends AbstractContainerScreen<RobotMenu> {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        // Channel widget hit-test: x+62 to x+114 (52px), hY+2 to hY+12.
+        int cwX = leftPos + 62, cwY = topPos - 62;
+        if (mouseY >= cwY && mouseY < cwY + 10) {
+            if (mouseX >= cwX && mouseX < cwX + 10) {
+                int ch = menu.getRobot().getSyncedBluetoothChannel();
+                PacketDistributor.sendToServer(new SetEntityChannelPayload(menu.getRobot().getId(), ch - 1));
+                return true;
+            }
+            if (mouseX >= cwX + 42 && mouseX < cwX + 52) {
+                int ch = menu.getRobot().getSyncedBluetoothChannel();
+                PacketDistributor.sendToServer(new SetEntityChannelPayload(menu.getRobot().getId(), ch + 1));
+                return true;
+            }
+        }
         boolean handled = super.mouseClicked(mouseX, mouseY, button);
         // Defocus label box if click is outside it.
         if (labelField != null && !labelField.isMouseOver(mouseX, mouseY) && labelField.isFocused()) {

@@ -5,6 +5,7 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.math.Axis;
 
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.entity.EntityRenderer;
@@ -12,7 +13,10 @@ import net.minecraft.client.renderer.entity.EntityRendererProvider;
 import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.util.Mth;
+import net.minecraft.world.entity.Entity;
 
+import org.joml.Matrix3f;
 import org.joml.Matrix4f;
 
 /**
@@ -94,6 +98,13 @@ public class DroneRenderer extends EntityRenderer<DroneEntity> {
         // Rear indicator — red stripe
         drawBox(vc, mat, last, -0.08f, 0.17f, 0.12f, 0.08f, 0.19f, 0.13f,
                 220, 40, 40, packedLight);
+        // Laser emitter — glowing red nozzle on front underside (only when laser installed)
+        if (entity.hasLaserUpgrade()) {
+            boolean laserPulse = (entity.tickCount % 6) < 4;
+            int emR = laserPulse ? 255 : 180, emG = 30, emB = 30;
+            drawBox(vc, mat, last, -0.025f, 0.07f, -0.17f, 0.025f, 0.12f, -0.14f,
+                    emR, emG, emB, packedLight);
+        }
 
         // === FOUR ARMS extending diagonally ===
         // Front-Left arm
@@ -119,8 +130,9 @@ public class DroneRenderer extends EntityRenderer<DroneEntity> {
         drawBox(vc, mat, last, 0.31f, 0.12f, 0.31f, 0.39f, 0.17f, 0.39f,
                 dw - 20, dg - 20, db - 15, packedLight); // BR
 
-        // === SPINNING ROTOR DISCS (flat) ===
-        float rotorSpin = ((entity.tickCount + partialTick) * 45f) % 360f;
+        // === SPINNING ROTOR DISCS (flat) — stop when docked on charge pad ===
+        boolean docked = entity.isDocked();
+        float rotorSpin = docked ? 0f : ((entity.tickCount + partialTick) * 45f) % 360f;
         drawRotor(vc, mat, last, -0.35f, 0.175f, -0.35f, 0.12f, rotorSpin,
                 rw, rg, rb, packedLight);
         drawRotor(vc, mat, last, 0.35f, 0.175f, -0.35f, 0.12f, -rotorSpin,
@@ -147,6 +159,51 @@ public class DroneRenderer extends EntityRenderer<DroneEntity> {
                 dw - 30, dg - 30, db - 25, packedLight);
 
         pose.popPose();
+
+        // Laser beam
+        int laserTargetId = entity.getLaserTargetId();
+        if (laserTargetId != -1 && entity.level() != null) {
+            Entity laserTarget = entity.level().getEntity(laserTargetId);
+            if (laserTarget != null && laserTarget.isAlive()) {
+                renderLaserBeam(entity, laserTarget, partialTick, pose, buffers);
+            }
+        }
+
+        // GPS destination line — thin semi-transparent line to the GPS waypoint B (output/dest).
+        net.minecraft.world.item.ItemStack gpsTool = entity.getGpsToolStack();
+        if (!gpsTool.isEmpty() && entity.level() != null) {
+            net.minecraft.core.BlockPos gpsTarget = com.apocscode.byteblock.item.GpsToolItem.getB(gpsTool);
+            if (gpsTarget == null) gpsTarget = com.apocscode.byteblock.item.GpsToolItem.getA(gpsTool);
+            if (gpsTarget != null) {
+                double exW = Mth.lerp(partialTick, entity.xOld, entity.getX());
+                double eyW = Mth.lerp(partialTick, entity.yOld, entity.getY());
+                double ezW = Mth.lerp(partialTick, entity.zOld, entity.getZ());
+                float gx = (float)(gpsTarget.getX() + 0.5 - exW);
+                float gy = (float)(gpsTarget.getY() + 1.0 - eyW);
+                float gz = (float)(gpsTarget.getZ() + 0.5 - ezW);
+                float dist = (float) Math.sqrt(gx * gx + gy * gy + gz * gz);
+                if (dist > 1.0f && dist < 256.0f) {
+                    float gnx = gx / dist, gny = gy / dist, gnz = gz / dist;
+                    pose.pushPose();
+                    VertexConsumer gvc = buffers.getBuffer(RenderType.lines());
+                    PoseStack.Pose glast = pose.last();
+                    Matrix4f gmat = glast.pose();
+                    // White-tipped line fading to the GPS mode color toward the target.
+                    String gpsMode = com.apocscode.byteblock.item.GpsToolItem.getMode(gpsTool).name();
+                    int lineR = 180, lineG = 230, lineB = 255; // default cyan-white
+                    if ("ROUTE".equals(gpsMode))    { lineR = 50;  lineG = 220; lineB = 80; }
+                    if ("WAYPOINT".equals(gpsMode)) { lineR = 0;   lineG = 180; lineB = 255; }
+                    if ("AREA".equals(gpsMode))     { lineR = 255; lineG = 200; lineB = 0; }
+                    if ("PATH".equals(gpsMode))     { lineR = 180; lineG = 50;  lineB = 255; }
+                    gvc.addVertex(gmat, 0f, 0.15f, 0f)
+                       .setColor(255, 255, 255, 200).setNormal(glast, gnx, gny, gnz);
+                    gvc.addVertex(gmat, gx, gy, gz)
+                       .setColor(lineR, lineG, lineB, 80).setNormal(glast, gnx, gny, gnz);
+                    pose.popPose();
+                }
+            }
+        }
+
         super.render(entity, yaw, partialTick, pose, buffers, packedLight);
     }
 
@@ -238,18 +295,112 @@ public class DroneRenderer extends EntityRenderer<DroneEntity> {
         return true;
     }
 
+    /**
+     * Draw a pulsing laser beam from the drone body toward a target entity.
+     * Uses RenderType.lines() with 5 parallel lines (cross pattern) for visible width.
+     * Flickers every 4th tick and emits CRIT particles along the beam.
+     */
+    private void renderLaserBeam(DroneEntity entity, Entity target, float partialTick,
+                                  PoseStack pose, MultiBufferSource buffers) {
+        // Interpolated world positions
+        double exW = Mth.lerp(partialTick, entity.xOld, entity.getX());
+        double eyW = Mth.lerp(partialTick, entity.yOld, entity.getY());
+        double ezW = Mth.lerp(partialTick, entity.zOld, entity.getZ());
+
+        // Target centre in entity-local space (pose stack origin = entity feet)
+        float tx = (float)(Mth.lerp(partialTick, target.xOld, target.getX()) - exW);
+        float ty = (float)(Mth.lerp(partialTick, target.yOld, target.getY())
+                           + target.getBbHeight() * 0.5 - eyW);
+        float tz = (float)(Mth.lerp(partialTick, target.zOld, target.getZ()) - ezW);
+
+        float len = (float) Math.sqrt(tx * tx + ty * ty + tz * tz);
+        if (len < 0.1f) return;
+        float nx = tx / len, ny = ty / len, nz = tz / len;
+
+        // Flicker: dim on tick%4==3
+        boolean dim = (entity.tickCount % 4) == 3;
+        int alpha = dim ? 80 : 230;
+
+        pose.pushPose();
+        VertexConsumer vc = buffers.getBuffer(RenderType.lines());
+        PoseStack.Pose last = pose.last();
+        Matrix4f mat  = last.pose();
+
+        // 5-line cross pattern for beam thickness; centre = white-hot, edges = red
+        float[][] off = {{0f, 0f}, {0.02f, 0f}, {-0.02f, 0f}, {0f, 0.02f}, {0f, -0.02f}};
+        int[][] cols  = {{255,220,220}, {220,30,30}, {220,30,30}, {220,30,30}, {220,30,30}};
+
+        float sy = 0.10f; // beam origin: slightly below drone centre
+        for (int i = 0; i < 5; i++) {
+            float ox = off[i][0], oy = off[i][1];
+            int r = cols[i][0], g = cols[i][1], b = cols[i][2];
+            vc.addVertex(mat, ox,      sy + oy,      0f)
+              .setColor(r, g, b, alpha).setNormal(last, nx, ny, nz);
+            vc.addVertex(mat, tx + ox, ty + oy, tz)
+              .setColor(r, g, b, alpha).setNormal(last, nx, ny, nz);
+        }
+        pose.popPose();
+
+        // Spark particle at impact point (client-side, ~10/s)
+        if (entity.level() != null && !dim && entity.tickCount % 2 == 0) {
+            double ipx = Mth.lerp(partialTick, target.xOld, target.getX());
+            double ipy = Mth.lerp(partialTick, target.yOld, target.getY())
+                         + target.getBbHeight() * 0.5;
+            double ipz = Mth.lerp(partialTick, target.zOld, target.getZ());
+            entity.level().addParticle(ParticleTypes.CRIT,       ipx, ipy, ipz, 0, 0, 0);
+            entity.level().addParticle(ParticleTypes.DAMAGE_INDICATOR, ipx, ipy, ipz, 0, 0, 0);
+        }
+    }
+
     @Override
     protected void renderNameTag(DroneEntity entity, net.minecraft.network.chat.Component displayName,
                                   PoseStack poseStack, MultiBufferSource buffer,
                                   int packedLight, float partialTick) {
-        if (entity.hasCustomName()) {
-            super.renderNameTag(entity, displayName, poseStack, buffer, packedLight, partialTick);
-        }
+        if (this.entityRenderDispatcher.distanceToSqr(entity) > 4096.0) return;
+
+        Font font = this.getFont();
+        boolean hasName = entity.hasCustomName();
+        net.minecraft.network.chat.Component stats = entity.getStatsLine();
+
+        int nameW  = hasName ? font.width(displayName) : 0;
+        int statsW = font.width(stats);
+        int panelW = Math.max(nameW, statsW) + 8;
+
+        float nameY  = 0f;
+        float statsY = hasName ? 11f : 0f;
+
+        float panelTop    = (hasName ? nameY : statsY) - 4f;
+        float accentBot   = panelTop + 2f;
+        float panelBottom = statsY + 10f;
+
         poseStack.pushPose();
-        if (entity.hasCustomName()) {
-            poseStack.translate(0.0, -0.27, 0.0);
+        poseStack.translate(0.0, entity.getBbHeight() + 0.5f, 0.0);
+        poseStack.mulPose(this.entityRenderDispatcher.cameraOrientation());
+        poseStack.scale(0.009f, -0.009f, 0.009f);
+        Matrix4f mat = poseStack.last().pose();
+
+        float left  = -panelW / 2f;
+        float right =  panelW / 2f;
+
+        VertexConsumer bg = buffer.getBuffer(RenderType.textBackground());
+        // Top accent strip (drone blue #288CD8).
+        bg.addVertex(mat, left,  panelTop, 0f).setColor(0xFF288CD8).setLight(packedLight);
+        bg.addVertex(mat, left,  accentBot, 0f).setColor(0xFF288CD8).setLight(packedLight);
+        bg.addVertex(mat, right, accentBot, 0f).setColor(0xFF288CD8).setLight(packedLight);
+        bg.addVertex(mat, right, panelTop,  0f).setColor(0xFF288CD8).setLight(packedLight);
+        // Dark body.
+        bg.addVertex(mat, left,  accentBot,   0f).setColor(0xB8101010).setLight(packedLight);
+        bg.addVertex(mat, left,  panelBottom, 0f).setColor(0xB8101010).setLight(packedLight);
+        bg.addVertex(mat, right, panelBottom, 0f).setColor(0xB8101010).setLight(packedLight);
+        bg.addVertex(mat, right, accentBot,   0f).setColor(0xB8101010).setLight(packedLight);
+
+        if (hasName) {
+            font.drawInBatch(displayName, -nameW / 2f, nameY, 0xFFFFFF, false, mat, buffer,
+                             Font.DisplayMode.NORMAL, 0, packedLight);
         }
-        super.renderNameTag(entity, entity.getStatsLine(), poseStack, buffer, packedLight, partialTick);
+        font.drawInBatch(stats, -statsW / 2f, statsY, 0xFFFFFF, false, mat, buffer,
+                         Font.DisplayMode.NORMAL, 0, packedLight);
+
         poseStack.popPose();
     }
 

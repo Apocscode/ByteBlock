@@ -44,14 +44,23 @@ public class DroneMenu extends AbstractContainerMenu {
         addSlot(new EntitySlot(drone::getGpsToolStack, drone::setGpsToolStack,
                 s -> s.isEmpty() || s.getItem() instanceof com.apocscode.byteblock.item.GpsToolItem,
                 8, 56));
+        // Upgrade slots (slots 11..14) — column to the right of the fuel bar
+        for (int i = 0; i < 4; i++) {
+            final int idx = i;
+            addSlot(new EntitySlot(
+                    () -> drone.getUpgradeSlots().getItem(idx),
+                    s  -> drone.getUpgradeSlots().setItem(idx, s),
+                    s  -> s.isEmpty() || s.getItem() instanceof com.apocscode.byteblock.item.UpgradeCard,
+                    152, 18 + i * 18));
+        }
 
-        // Player inventory rows (slots 11..37)
+        // Player inventory rows (slots 15..41)
         for (int row = 0; row < 3; row++) {
             for (int col = 0; col < 9; col++) {
                 addSlot(new Slot(playerInv, col + row * 9 + 9, 8 + col * 18, 104 + row * 18));
             }
         }
-        // Hotbar (slots 37..45)
+        // Hotbar (slots 42..50)
         for (int col = 0; col < 9; col++) {
             addSlot(new Slot(playerInv, col, 8 + col * 18, 162));
         }
@@ -80,14 +89,17 @@ public class DroneMenu extends AbstractContainerMenu {
         ItemStack stack = slot.getItem();
         ItemStack copy = stack.copy();
 
-        final int cargoEnd     = CARGO_SLOTS;     // 9
-        final int accessoryEnd = cargoEnd + 2;    // 11 (battery + gps)
-        final int playerEnd    = accessoryEnd + 36;
+        final int cargoEnd     = CARGO_SLOTS;       // 9
+        final int accessoryEnd = cargoEnd + 2;      // 11 (battery + gps)
+        final int upgradeEnd   = accessoryEnd + 4;  // 15 (4 upgrade slots)
+        final int playerEnd    = upgradeEnd + 36;   // 51
 
-        if (index < accessoryEnd) {
-            if (!moveItemStackTo(stack, accessoryEnd, playerEnd, true)) return ItemStack.EMPTY;
+        if (index < upgradeEnd) {
+            if (!moveItemStackTo(stack, upgradeEnd, playerEnd, true)) return ItemStack.EMPTY;
         } else {
-            if (stack.getItem() instanceof com.apocscode.byteblock.item.GpsToolItem) {
+            if (stack.getItem() instanceof com.apocscode.byteblock.item.UpgradeCard) {
+                moveItemStackTo(stack, accessoryEnd, upgradeEnd, false);
+            } else if (stack.getItem() instanceof com.apocscode.byteblock.item.GpsToolItem) {
                 moveItemStackTo(stack, accessoryEnd - 1, accessoryEnd, false);
             } else if (stack.getCapability(Capabilities.EnergyStorage.ITEM) != null) {
                 moveItemStackTo(stack, cargoEnd, accessoryEnd - 1, false);

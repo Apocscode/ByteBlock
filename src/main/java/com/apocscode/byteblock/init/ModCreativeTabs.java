@@ -39,5 +39,12 @@ public class ModCreativeTabs {
                         output.accept(ModItems.ROBOT_SPAWN_EGG.get());
                         output.accept(ModItems.UNICYCLE_ROBOT_SPAWN_EGG.get());
                         output.accept(ModItems.DRONE_SPAWN_EGG.get());
+                        // Upgrade Cards
+                        output.accept(ModItems.UPGRADE_RANGE_I.get());
+                        output.accept(ModItems.UPGRADE_RANGE_II.get());
+                        output.accept(ModItems.UPGRADE_RANGE_CREATIVE.get());
+                        output.accept(ModItems.UPGRADE_SPEED.get());
+                        output.accept(ModItems.UPGRADE_INVENTORY.get());
+                        output.accept(ModItems.UPGRADE_LASER.get());
                     }).build());
 }

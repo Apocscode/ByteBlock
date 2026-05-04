@@ -37,8 +37,8 @@ public class MonitorProgram extends OSProgram {
 
     // Layout
     private static final int HEADER_H = 20;
-    private static final int ROW_H = 16;
-    private static final int LIST_TOP = HEADER_H + 18; // after header + column bar
+    private static final int ROW_H = 20;
+    private static final int LIST_TOP = HEADER_H + 20; // after header + column bar
     private static final int BTN_W = 80;
     private static final int BTN_H = 18;
     private static final int BTN_GAP = 4;
@@ -148,6 +148,9 @@ public class MonitorProgram extends OSProgram {
                     } else {
                         running = false;
                     }
+                } else if (code == 82 && activePattern == null && !configMode) { // R = Refresh
+                    refreshMonitors();
+                    statusText = "Refreshed.";
                 }
             }
             case MOUSE_CLICK_PX -> handleClickPx(event.getInt(1), event.getInt(2));
@@ -199,14 +202,31 @@ public class MonitorProgram extends OSProgram {
 
         // Check "Mirror" / "Clear" button at bottom of right panel
         int clearBtnY = btnStartY + ((PATTERN_BUTTONS.length + 1) / 2) * (BTN_H + BTN_GAP) + 8;
-        if (mx >= btnStartX && mx < btnStartX + BTN_W * 2 + BTN_GAP && my >= clearBtnY && my < clearBtnY + BTN_H) {
+        int clearW = BTN_W * 2 + BTN_GAP;
+        if (mx >= btnStartX && mx < btnStartX + clearW && my >= clearBtnY && my < clearBtnY + BTN_H) {
             applyDisplayMode("mirror");
             activePattern = null;
             return;
         }
 
+        // "Blank / Off" button
+        int blankBtnY = clearBtnY + BTN_H + BTN_GAP;
+        if (mx >= btnStartX && mx < btnStartX + clearW && my >= blankBtnY && my < blankBtnY + BTN_H) {
+            applyDisplayMode("blank");
+            activePattern = null;
+            return;
+        }
+
+        // Refresh button
+        int refreshBtnY = blankBtnY + BTN_H + BTN_GAP;
+        if (mx >= btnStartX && mx < btnStartX + clearW && my >= refreshBtnY && my < refreshBtnY + BTN_H) {
+            refreshMonitors();
+            statusText = "Refreshed.";
+            return;
+        }
+
         // "Configure…" button — opens the geometry editor for the selected monitor.
-        int cfgBtnY = clearBtnY + BTN_H + 6;
+        int cfgBtnY = refreshBtnY + BTN_H + 6;
         if (mx >= btnStartX && mx < btnStartX + BTN_W * 2 + BTN_GAP && my >= cfgBtnY && my < cfgBtnY + BTN_H) {
             openConfigForSelected();
         }
@@ -271,17 +291,17 @@ public class MonitorProgram extends OSProgram {
         // ── Header ──
         pb.fillRect(0, 0, w, HEADER_H, HEADER_BG);
         pb.drawString(4, 2, "Monitor Manager", ACCENT);
-        String countStr = monitors.size() + " monitor" + (monitors.size() != 1 ? "s" : "");
+        String countStr = monitors.size() + " monitor" + (monitors.size() != 1 ? "s" : "") + "  [R] Refresh";
         pb.drawStringRight(w - 4, 2, countStr, CYAN);
 
         // ── Left panel: monitor list ──
         // Column header
         int colY = HEADER_H;
-        pb.fillRect(0, colY, halfW, 16, COL_HDR_BG);
-        pb.drawString(4, colY, "Label / ID", COL_HDR_TXT);
-        pb.drawString(110, colY, "Size", COL_HDR_TXT);
-        pb.drawString(150, colY, "Dist", COL_HDR_TXT);
-        pb.drawString(200, colY, "Mode", COL_HDR_TXT);
+        pb.fillRect(0, colY, halfW, 18, COL_HDR_BG);
+        pb.drawString(4,   colY + 1, "Label / ID", COL_HDR_TXT);
+        pb.drawString(130, colY + 1, "Size",        COL_HDR_TXT);
+        pb.drawString(175, colY + 1, "Dist",        COL_HDR_TXT);
+        pb.drawString(220, colY + 1, "Mode",        COL_HDR_TXT);
 
         // Rows
         int maxVisible = (h - LIST_TOP - 4) / ROW_H;
@@ -296,12 +316,12 @@ public class MonitorProgram extends OSProgram {
             // Show label if assigned (yellow), otherwise short device id (gray)
             String name = (mon.label != null && !mon.label.isEmpty()) ? mon.label : mon.shortId;
             int nameColor = (mon.label != null && !mon.label.isEmpty()) ? 0xFFFFCC66 : TEXT_NORM;
-            pb.drawString(4, rowY, name, nameColor);
-            pb.drawString(110, rowY, mon.width + "x" + mon.height, CYAN);
-            pb.drawString(150, rowY, String.format("%.0fm", mon.distance), TEXT_DIM);
+            pb.drawString(4,   rowY + 2, name, nameColor);
+            pb.drawString(130, rowY + 2, mon.width + "x" + mon.height, CYAN);
+            pb.drawString(175, rowY + 2, String.format("%.0fm", mon.distance), TEXT_DIM);
 
-            int modeColor = "mirror".equals(mon.mode) ? GREEN : 0xFFDDCC44;
-            pb.drawString(200, rowY, mon.mode, modeColor);
+            int modeColor = "mirror".equals(mon.mode) ? GREEN : ("blank".equals(mon.mode) ? RED : 0xFFDDCC44);
+            pb.drawString(220, rowY + 2, mon.mode, modeColor);
         }
 
         // Divider
@@ -333,8 +353,18 @@ public class MonitorProgram extends OSProgram {
         pb.fillRoundRect(btnStartX, clearBtnY, clearW, BTN_H, 3, 0xFF2A4A2A);
         pb.drawStringCentered(btnStartX, clearW, clearBtnY + 1, "Reset to Mirror", GREEN);
 
+        // "Blank / Off" button
+        int blankBtnY = clearBtnY + BTN_H + BTN_GAP;
+        pb.fillRoundRect(btnStartX, blankBtnY, clearW, BTN_H, 3, 0xFF3A2A2A);
+        pb.drawStringCentered(btnStartX, clearW, blankBtnY + 1, "Blank / Off", RED);
+
+        // Refresh button
+        int refreshBtnY = blankBtnY + BTN_H + BTN_GAP;
+        pb.fillRoundRect(btnStartX, refreshBtnY, clearW, BTN_H, 3, BTN_BG);
+        pb.drawStringCentered(btnStartX, clearW, refreshBtnY + 1, "Refresh  [R]", CYAN);
+
         // "Configure…" button — opens the geometry editor for the selected monitor.
-        int cfgBtnY = clearBtnY + BTN_H + 6;
+        int cfgBtnY = refreshBtnY + BTN_H + 6;
         boolean cfgEnabled = selectedIndex >= 0 && selectedIndex < monitors.size();
         int cfgBg = cfgEnabled ? 0xFF2A3A4A : 0xFF2A2A35;
         int cfgFg = cfgEnabled ? CYAN       : TEXT_DIM;
@@ -344,7 +374,7 @@ public class MonitorProgram extends OSProgram {
         // Selected monitor info
         if (selectedIndex >= 0 && selectedIndex < monitors.size()) {
             MonitorInfo sel = monitors.get(selectedIndex);
-            int infoY = clearBtnY + BTN_H + 16;
+            int infoY = cfgBtnY + BTN_H + 10;
             pb.drawString(halfW + 4, infoY, "Selected Monitor:", ACCENT);
             infoY += 16;
             String labelLine = (sel.label != null && !sel.label.isEmpty())
@@ -365,7 +395,7 @@ public class MonitorProgram extends OSProgram {
 
         // Footer hint
         pb.drawString(4, h - 30, statusText, statusText.startsWith("Applied") ? GREEN : WARN);
-        pb.drawString(4, h - 14, "ESC closes preview | Reset to Mirror clears monitor test mode", TEXT_DIM);
+        pb.drawString(4, h - 14, "ESC closes preview | R = Refresh | Blank/Off turns monitor black | Reset to Mirror restores", TEXT_DIM);
     }
 
     // ────────────────────── Test pattern rendering ──────────────────────

@@ -50,8 +50,8 @@ public class ChargingStationScreen extends AbstractContainerScreen<ChargingStati
         gui.drawString(this.font, Component.literal("Charging Station"),
                 x + 6, y + 4, 0xFFE0E0E0, false);
 
-        int stored = menu.getStation().getEnergyStored();
-        int max = Math.max(1, menu.getStation().getMaxEnergy());
+        int stored = menu.getSyncedEnergyStored();
+        int max = Math.max(1, menu.getSyncedMaxEnergy());
 
         // Vertical gradient FE bar on left.
         int barX = x + 10, barY = y + 22, barW = 16, barH = 120;
@@ -118,8 +118,8 @@ public class ChargingStationScreen extends AbstractContainerScreen<ChargingStati
 
         int barX = leftPos + 10, barY = topPos + 22, barW = 16, barH = 120;
         if (mouseX >= barX && mouseX < barX + barW && mouseY >= barY && mouseY < barY + barH) {
-            int stored = menu.getStation().getEnergyStored();
-            int max = menu.getStation().getMaxEnergy();
+            int stored = menu.getSyncedEnergyStored();
+            int max = menu.getSyncedMaxEnergy();
             gui.renderTooltip(this.font,
                     Component.literal(stored + " / " + max + " FE"),
                     mouseX, mouseY);

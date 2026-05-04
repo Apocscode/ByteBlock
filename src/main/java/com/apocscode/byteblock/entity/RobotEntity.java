@@ -3,6 +3,9 @@ package com.apocscode.byteblock.entity;
 import com.apocscode.byteblock.computer.JavaOS;
 import com.apocscode.byteblock.network.BluetoothNetwork;
 
+import com.mojang.logging.LogUtils;
+import org.slf4j.Logger;
+
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
@@ -31,6 +34,8 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
 import net.neoforged.neoforge.energy.EnergyStorage;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Queue;
@@ -42,12 +47,18 @@ import java.util.UUID;
  * Has a 16-slot internal inventory, FE-powered, with built-in computer terminal.
  */
 public class RobotEntity extends PathfinderMob implements net.minecraft.world.MenuProvider {
+    private static final Logger LOGGER = LogUtils.getLogger();
     private static final int MAX_ENERGY = 10000;
     private static final int MAX_RECEIVE = 200;
     public static final int ENERGY_PER_ACTION = 10;
 
     private static final EntityDataAccessor<Boolean> DATA_CHARGING =
             SynchedEntityData.defineId(RobotEntity.class, EntityDataSerializers.BOOLEAN);
+    private static final EntityDataAccessor<Integer> DATA_ENERGY =
+            SynchedEntityData.defineId(RobotEntity.class, EntityDataSerializers.INT);
+    /** Bluetooth channel — synced to client so the robot GUI screen can display/change it. */
+    private static final EntityDataAccessor<Integer> DATA_CHANNEL =
+            SynchedEntityData.defineId(RobotEntity.class, EntityDataSerializers.INT);
 
     private UUID ownerId = null;
     private UUID computerId;
@@ -60,6 +71,8 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
     private ItemStack equippedToolRight = ItemStack.EMPTY;  // RIGHT hand (Phase 3)
     private ItemStack batteryStack = ItemStack.EMPTY;       // Battery / FE-storage upgrade slot
     private ItemStack gpsToolStack = ItemStack.EMPTY;       // GPS Tool slot — programs read its NBT (B1)
+    /** 4 upgrade card slots — Range, Speed, Inventory, etc. */
+    private final SimpleContainer upgradeSlots = new SimpleContainer(4);
     // dedicated tool slot (pick/axe/shovel/sword/shears)
     private final Queue<String> commandQueue = new LinkedList<>();
     private EnergyStorage energyStorage;
@@ -93,6 +106,8 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
     // Low-battery homing — when energy < 5%, robot pathfinds to nearest charging pad.
     private BlockPos cachedChargingPad = null;
     private int chargingPadScanCooldown = 0;
+    /** Manually assigned home charging pad — overrides auto-scan when set. */
+    private BlockPos chargePad = null;
     // Stuck detection while homing.
     private double homingLastX, homingLastZ;
     private int homingStuckTicks = 0;
@@ -128,6 +143,8 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
     protected void defineSynchedData(SynchedEntityData.Builder builder) {
         super.defineSynchedData(builder);
         builder.define(DATA_CHARGING, false);
+        builder.define(DATA_ENERGY, 0);
+        builder.define(DATA_CHANNEL, 2);
     }
 
     @Override
@@ -167,8 +184,17 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
         tickChargingState();
         tickLowBatteryHoming();
 
+        // Sync energy to clients every 10 ticks (twice per second) — drives nameplate display.
+        if (level().getGameTime() % 10 == 0) {
+            getEntityData().set(DATA_ENERGY, energyStorage.getEnergyStored());
+        }
+
         // Register on Bluetooth
         BluetoothNetwork.register(level(), computerId, blockPosition(), bluetoothChannel);
+        BluetoothNetwork.Message msg;
+        while ((msg = BluetoothNetwork.receive(computerId)) != null) {
+            handleBluetoothMessage(msg.content());
+        }
     }
 
     /**
@@ -238,15 +264,28 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
     private void tickLowBatteryHoming() {
         int e = energyStorage.getEnergyStored();
         int em = energyStorage.getMaxEnergyStored();
-        boolean low = em > 0 && (e * 100 / em) < 5;
+        boolean low = em > 0 && (e * 100 / em) < 20;
         if (!low) {
             cachedChargingPad = null;
             homingStuckTicks = 0;
             homingRepathCooldown = 0;
             return;
         }
-        // Don't override active scripted nav.
-        if (!commandQueue.isEmpty() || routeActive || patrolActive || navTarget != null) return;
+        // If there's no energy to execute anything, drop all nav state so homing can take over.
+        if (energyStorage.getEnergyStored() < ENERGY_PER_ACTION) {
+            routeActive = false;
+            patrolActive = false;
+            navTarget = null;
+        }
+        // Don't override active scripted nav (only blocks homing when robot still has enough energy).
+        boolean hasExecutableCommands = !commandQueue.isEmpty() && energyStorage.getEnergyStored() >= ENERGY_PER_ACTION;
+        if (hasExecutableCommands || routeActive || patrolActive || navTarget != null) {
+            if (level().getGameTime() % 100 == 0) {
+                LOGGER.warn("[ByteBlock Homing] {} blocked: cmds={} routeActive={} patrolActive={} navTarget={}",
+                        getId(), !commandQueue.isEmpty(), routeActive, patrolActive, navTarget);
+            }
+            return;
+        }
 
         if (chargingPadScanCooldown > 0) chargingPadScanCooldown--;
         if (homingRepathCooldown > 0) homingRepathCooldown--;
@@ -256,15 +295,24 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
             BlockState st = level().getBlockState(cachedChargingPad);
             if (!(st.getBlock() instanceof com.apocscode.byteblock.block.ChargingStationBlock)) {
                 cachedChargingPad = null;
-            } else if (cachedChargingPad.distSqr(blockPosition()) > 96 * 96) {
+            } else if (cachedChargingPad.distSqr(blockPosition()) > 32 * 32) {
                 cachedChargingPad = null;
             }
         }
-        if (cachedChargingPad == null && chargingPadScanCooldown <= 0) {
-            cachedChargingPad = findNearestChargingPad(64);
+        // Use manually assigned pad if set, else auto-scan.
+        if (chargePad != null) {
+            cachedChargingPad = chargePad;
+        } else if (cachedChargingPad == null && chargingPadScanCooldown <= 0) {
+            cachedChargingPad = findNearestChargingPad(32);
             chargingPadScanCooldown = 100;
+            LOGGER.warn("[ByteBlock Homing] {} scanned for pad: found={}", getId(), cachedChargingPad);
         }
-        if (cachedChargingPad == null) return;
+        if (cachedChargingPad == null) {
+            if (level().getGameTime() % 100 == 0)
+                LOGGER.warn("[ByteBlock Homing] {} no pad found within 32 blocks pos={} energy={}/{}",
+                        getId(), blockPosition(), energyStorage.getEnergyStored(), energyStorage.getMaxEnergyStored());
+            return;
+        }
 
         // Stuck detection: if XZ position barely changed, retry / nudge / teleport.
         double dx = getX() - homingLastX;
@@ -310,6 +358,8 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
                 || (homingStuckTicks >= 40 && homingRepathCooldown <= 0)
                 || getNavigation().isDone();
         if (shouldRepath) {
+            LOGGER.warn("[ByteBlock Homing] {} pathing to {} energy={}/{} stuck={}",
+                    getId(), cachedChargingPad, energyStorage.getEnergyStored(), energyStorage.getMaxEnergyStored(), homingStuckTicks);
             getNavigation().moveTo(cachedChargingPad.getX() + 0.5,
                     cachedChargingPad.getY() + 0.2,
                     cachedChargingPad.getZ() + 0.5, 1.0);
@@ -356,9 +406,9 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
         BlockPos origin = blockPosition();
         BlockPos best = null;
         double bestDist = Double.MAX_VALUE;
-        for (int dx = -radius; dx <= radius; dx += 2) {
-            for (int dz = -radius; dz <= radius; dz += 2) {
-                for (int dy = -8; dy <= 8; dy += 2) {
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                for (int dy = -6; dy <= 6; dy++) {
                     BlockPos p = origin.offset(dx, dy, dz);
                     if (level().getBlockState(p).getBlock() instanceof com.apocscode.byteblock.block.ChargingStationBlock) {
                         double d = p.distSqr(origin);
@@ -471,6 +521,58 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
         if (cmd.startsWith("dig") || cmd.startsWith("place") || cmd.startsWith("attack")
                 || cmd.startsWith("drop") || cmd.startsWith("suck")) {
             playHandtoolSound();
+        }
+    }
+
+    private void handleBluetoothMessage(String raw) {
+        if (raw == null || !raw.startsWith("robot:")) return;
+        String[] parts = raw.split(":", 6);
+        if (parts.length < 2) return;
+
+        try {
+            switch (parts[1]) {
+                case "cmd" -> {
+                    if (parts.length >= 3) queueCommand(parts[2]);
+                }
+                case "upload" -> {
+                    if (parts.length < 4) return;
+                    String path = parts[2];
+                    String content = new String(Base64.getDecoder().decode(parts[3]), StandardCharsets.UTF_8);
+                    os.getFileSystem().writeFile(path, content);
+                    sendPuzzleAck(parts, "ok");
+                }
+                case "run" -> {
+                    if (parts.length < 3) return;
+                    os.launchProgram(new com.apocscode.byteblock.computer.programs.LuaShellProgram(parts[2]));
+                    sendPuzzleAck(parts, "ok");
+                }
+                case "uploadrun" -> {
+                    if (parts.length < 4) return;
+                    String path = parts[2];
+                    String content = new String(Base64.getDecoder().decode(parts[3]), StandardCharsets.UTF_8);
+                    os.getFileSystem().writeFile(path, content);
+                    os.launchProgram(new com.apocscode.byteblock.computer.programs.LuaShellProgram(path));
+                    sendPuzzleAck(parts, "ok");
+                }
+                default -> {
+                    // Ignore unknown robot messages.
+                }
+            }
+        } catch (IllegalArgumentException ignored) {
+            // Bad Base64 payload.
+            sendPuzzleAck(parts, "bad_payload");
+        }
+    }
+
+    private void sendPuzzleAck(String[] parts, String status) {
+        if (parts == null || parts.length < 6 || level() == null) return;
+        try {
+            UUID target = UUID.fromString(parts[4]);
+            String token = parts[5];
+            BluetoothNetwork.send(level(), blockPosition(), computerId, target, bluetoothChannel,
+                    "puzzle:ack:robot:" + token + ":" + status);
+        } catch (IllegalArgumentException ignored) {
+            // Invalid sender UUID in payload.
         }
     }
 
@@ -911,7 +1013,7 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
             // Reopening after a previous SHUTDOWN (e.g. ESC out of the desktop) needs a reboot,
             // otherwise ComputerScreen.render() immediately calls onClose() because the OS is
             // still in SHUTDOWN state — making the terminal appear to "only open once".
-            if (os.isShutdown()) os.reboot();
+            if (os.isShutdown()) os.restartSilent();
             // Open the robot's terminal screen (client-side only)
             net.minecraft.client.Minecraft.getInstance().setScreen(
                     new com.apocscode.byteblock.client.ComputerScreen(os));
@@ -984,6 +1086,7 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
 
     public ItemStack getGpsToolStack() { return gpsToolStack; }
     public void setGpsToolStack(ItemStack stack) { this.gpsToolStack = stack == null ? ItemStack.EMPTY : stack; }
+    public SimpleContainer getUpgradeSlots() { return upgradeSlots; }
 
     public java.util.UUID getOwnerId() { return ownerId; }
     public com.apocscode.byteblock.entity.EntityPaint getPaint() { return paint; }
@@ -991,6 +1094,14 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
 
     public boolean isMuted() { return muted; }
     public void setMuted(boolean m) { this.muted = m; }
+
+    public int getBluetoothChannel() { return bluetoothChannel; }
+    /** Client-safe: reads the synced entity data (available on both sides). */
+    public int getSyncedBluetoothChannel() { return getEntityData().get(DATA_CHANNEL); }
+    public void setBluetoothChannel(int ch) {
+        this.bluetoothChannel = Math.max(1, Math.min(65535, ch));
+        getEntityData().set(DATA_CHANNEL, this.bluetoothChannel);
+    }
 
     /**
      * Pick the better mining tool for {@code state} from either hand. Empty hand if neither
@@ -1077,12 +1188,22 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
     public Component getStatsLine() {
         int hp  = (int) Math.ceil(getHealth());
         int max = (int) getMaxHealth();
-        int e   = energyStorage.getEnergyStored();
-        int em  = energyStorage.getMaxEnergyStored();
+        // Use synced value so client-side rendering (nameplate) shows the real server energy.
+        int e   = getEntityData().get(DATA_ENERGY);
+        int em  = MAX_ENERGY;
         int pct = em > 0 ? (e * 100 / em) : 0;
         String pctColor = pct < 20 ? "§c" : pct < 50 ? "§e" : pct < 80 ? "§b" : "§a";
         String hpColor  = hp < max / 3 ? "§c" : hp < max * 2 / 3 ? "§e" : "§a";
-        return Component.literal(hpColor + "♥ " + hp + "/" + max + "  §r" + pctColor + "⚡ " + pct + "%");
+        int hpFilled = max > 0 ? Math.min(4, Math.round(hp * 4f / max)) : 0;
+        int eFilled  = Math.min(4, pct * 4 / 100);
+        StringBuilder hpBar = new StringBuilder();
+        StringBuilder eBar  = new StringBuilder();
+        for (int i = 0; i < 4; i++) hpBar.append(i < hpFilled ? hpColor  + "█" : "§8░");
+        for (int i = 0; i < 4; i++) eBar .append(i < eFilled  ? pctColor + "█" : "§8░");
+        return Component.literal(
+            "§7♥ " + hpBar + " §r" + hpColor + hp + "§8/§7" + max +
+            "  §7⚡ " + eBar + " §r" + pctColor + pct + "§7%"
+        );
     }
 
     @Override
@@ -1119,8 +1240,19 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
         if (!gpsToolStack.isEmpty()) {
             tag.put("GpsTool", gpsToolStack.save(level().registryAccess()));
         }
+        CompoundTag upgradeTag = new CompoundTag();
+        for (int i = 0; i < upgradeSlots.getContainerSize(); i++) {
+            ItemStack stack = upgradeSlots.getItem(i);
+            if (!stack.isEmpty()) upgradeTag.put(String.valueOf(i), stack.save(level().registryAccess()));
+        }
+        tag.put("Upgrades", upgradeTag);
         if (!paint.isEmpty()) tag.put("Paint", paint.save());
         tag.putBoolean("Muted", muted);
+        if (chargePad != null) {
+            tag.putInt("ChargePadX", chargePad.getX());
+            tag.putInt("ChargePadY", chargePad.getY());
+            tag.putInt("ChargePadZ", chargePad.getZ());
+        }
     }
 
     @Override
@@ -1128,7 +1260,10 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
         super.readAdditionalSaveData(tag);
         if (tag.contains("OwnerId")) ownerId = tag.getUUID("OwnerId");
         if (tag.contains("ComputerId")) computerId = tag.getUUID("ComputerId");
-        if (tag.contains("BluetoothChannel")) bluetoothChannel = tag.getInt("BluetoothChannel");
+        if (tag.contains("BluetoothChannel")) {
+            bluetoothChannel = tag.getInt("BluetoothChannel");
+            getEntityData().set(DATA_CHANNEL, bluetoothChannel);
+        }
         if (tag.contains("SelectedSlot")) selectedSlot = tag.getInt("SelectedSlot");
         if (tag.contains("Facing")) facing = Direction.byName(tag.getString("Facing"));
         if (facing == null) facing = Direction.NORTH;
@@ -1167,11 +1302,28 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
             gpsToolStack = ItemStack.parse(level().registryAccess(), tag.getCompound("GpsTool"))
                     .orElse(ItemStack.EMPTY);
         }
+        if (tag.contains("Upgrades")) {
+            CompoundTag upgradeTag = tag.getCompound("Upgrades");
+            for (String key : upgradeTag.getAllKeys()) {
+                try {
+                    int slot = Integer.parseInt(key);
+                    upgradeSlots.setItem(slot,
+                            ItemStack.parse(level().registryAccess(), upgradeTag.getCompound(key))
+                                    .orElse(ItemStack.EMPTY));
+                } catch (NumberFormatException ignored) {}
+            }
+        }
         if (tag.contains("Paint")) paint = com.apocscode.byteblock.entity.EntityPaint.load(tag.getCompound("Paint"));
         if (tag.contains("Muted")) muted = tag.getBoolean("Muted");
+        if (tag.contains("ChargePadX")) {
+            chargePad = new BlockPos(tag.getInt("ChargePadX"), tag.getInt("ChargePadY"), tag.getInt("ChargePadZ"));
+        }
     }
 
     // --- MenuProvider ---
+
+    public BlockPos getChargePad() { return chargePad; }
+    public void setChargePad(BlockPos pad) { this.chargePad = pad; this.cachedChargingPad = pad; }
 
     @Override
     public Component getDisplayName() {

@@ -43,9 +43,12 @@ public class LuaShellProgram extends OSProgram {
         this.lua = new LuaRuntime(os);
         loadHistory();
 
-        appendOutput("ByteBlock Lua 5.2 Shell\n");
-        appendOutput("CC-style APIs: term, fs, os, colors, shell\n");
-        appendOutput("Type 'exit' to close, 'help' for commands.\n\n");
+        if (runFile == null) {
+            // Interactive REPL — show welcome banner
+            appendOutput("ByteBlock Lua 5.2 Shell\n");
+            appendOutput("CC-style APIs: term, fs, os, colors, shell\n");
+            appendOutput("Type 'exit' to close, 'help' for commands.\n\n");
+        }
 
         if (runFile != null) {
             appendOutput("Running: " + runFile + "\n");

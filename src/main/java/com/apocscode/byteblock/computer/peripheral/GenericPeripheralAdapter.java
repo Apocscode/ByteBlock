@@ -188,6 +188,14 @@ public class GenericPeripheralAdapter implements IPeripheralAdapter {
         Direction dir = PeripheralRegistry.sideToDirection(side);
         if (dir == null) return null;
         BlockPos target = origin.relative(dir);
+        // Use the pre-cached adjacent handlers to avoid calling level.getCapability()
+        // from the Lua coroutine thread (which deadlocks via CompletableFuture.join
+        // on the server thread). If no cached handler, return null rather than
+        // triggering a CompletableFuture dispatch.
+        if (os != null) {
+            IItemHandler cached = os.getAdjacentItemHandlerCache().get(target);
+            return cached; // may be null — better than deadlocking
+        }
         return level.getCapability(Capabilities.ItemHandler.BLOCK, target, null);
     }
 

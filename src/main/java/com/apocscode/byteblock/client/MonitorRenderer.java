@@ -94,6 +94,7 @@ public class MonitorRenderer implements BlockEntityRenderer<MonitorBlockEntity> 
         boolean isText   = "text".equals(displayMode);
         boolean isGfx    = "graphics".equals(displayMode);
         boolean isTest   = displayMode != null && displayMode.startsWith("test:");
+        boolean isBlank  = "blank".equals(displayMode);
 
         // Get/create texture
         ScreenTexture st = TEXTURE_CACHE.get(originPos);
@@ -109,6 +110,7 @@ public class MonitorRenderer implements BlockEntityRenderer<MonitorBlockEntity> 
             if (isMirror) {
                 if (computer == null) {
                     String lbl = origin.getLastKnownComputerLabel();
+                    if (lbl == null || lbl.isBlank()) lbl = origin.getLabel();
                     String sig = "tomb:" + (linkedPos == null ? "nolink" : linkedPos.asLong())
                             + ":" + (lbl == null ? "" : lbl);
                     if (!sig.equals(st.lastUploadedSig)) {
@@ -151,6 +153,13 @@ public class MonitorRenderer implements BlockEntityRenderer<MonitorBlockEntity> 
                     renderDisplayMode(st.stagingBuffer, displayMode);
                     uploadPixels(st, st.stagingBuffer);
                     st.lastUploadedSig = sig;
+                    st.lastUploadedSourceVersion = -1;
+                }
+            } else if (isBlank) {
+                if (!"blank".equals(st.lastUploadedSig)) {
+                    st.stagingBuffer.fillRect(0, 0, st.stagingBuffer.getWidth(), st.stagingBuffer.getHeight(), 0xFF000000);
+                    uploadPixels(st, st.stagingBuffer);
+                    st.lastUploadedSig = "blank";
                     st.lastUploadedSourceVersion = -1;
                 }
             }
@@ -564,16 +573,16 @@ public class MonitorRenderer implements BlockEntityRenderer<MonitorBlockEntity> 
         // x=1-mr gets u0) so the texture reads correctly to the player.
         vc.addVertex(mat, ml, 1 - mt, screenZ).setColor(255, 255, 255, 255).setUv(u1, v0)
                 .setOverlay(OverlayTexture.NO_OVERLAY).setLight(FULLBRIGHT)
-                .setNormal(pose.last(), 0, 0, -1);
+                .setNormal(pose.last(), 0, 1, 0);
         vc.addVertex(mat, ml, mb, screenZ).setColor(255, 255, 255, 255).setUv(u1, v1)
                 .setOverlay(OverlayTexture.NO_OVERLAY).setLight(FULLBRIGHT)
-                .setNormal(pose.last(), 0, 0, -1);
+                .setNormal(pose.last(), 0, 1, 0);
         vc.addVertex(mat, 1 - mr, mb, screenZ).setColor(255, 255, 255, 255).setUv(u0, v1)
                 .setOverlay(OverlayTexture.NO_OVERLAY).setLight(FULLBRIGHT)
-                .setNormal(pose.last(), 0, 0, -1);
+                .setNormal(pose.last(), 0, 1, 0);
         vc.addVertex(mat, 1 - mr, 1 - mt, screenZ).setColor(255, 255, 255, 255).setUv(u0, v0)
                 .setOverlay(OverlayTexture.NO_OVERLAY).setLight(FULLBRIGHT)
-                .setNormal(pose.last(), 0, 0, -1);
+                .setNormal(pose.last(), 0, 1, 0);
 
         pose.popPose();
     }

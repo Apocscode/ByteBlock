@@ -5,6 +5,7 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.math.Axis;
 
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.entity.EntityRenderer;
@@ -54,14 +55,50 @@ public class UnicycleRobotRenderer extends EntityRenderer<UnicycleRobotEntity> {
     protected void renderNameTag(UnicycleRobotEntity entity, net.minecraft.network.chat.Component displayName,
                                   PoseStack poseStack, MultiBufferSource buffer,
                                   int packedLight, float partialTick) {
-        if (entity.hasCustomName()) {
-            super.renderNameTag(entity, displayName, poseStack, buffer, packedLight, partialTick);
-        }
+        if (this.entityRenderDispatcher.distanceToSqr(entity) > 4096.0) return;
+
+        Font font = this.getFont();
+        boolean hasName = entity.hasCustomName();
+        net.minecraft.network.chat.Component stats = entity.getStatsLine();
+
+        int nameW  = hasName ? font.width(displayName) : 0;
+        int statsW = font.width(stats);
+        int panelW = Math.max(nameW, statsW) + 8;
+
+        float nameY  = 0f;
+        float statsY = hasName ? 11f : 0f;
+
+        float panelTop    = (hasName ? nameY : statsY) - 4f;
+        float accentBot   = panelTop + 2f;
+        float panelBottom = statsY + 10f;
+
         poseStack.pushPose();
-        if (entity.hasCustomName()) {
-            poseStack.translate(0.0, -0.27, 0.0);
+        poseStack.translate(0.0, entity.getBbHeight() + 0.5f, 0.0);
+        poseStack.mulPose(this.entityRenderDispatcher.cameraOrientation());
+        poseStack.scale(0.009f, -0.009f, 0.009f);
+        Matrix4f mat = poseStack.last().pose();
+
+        float left  = -panelW / 2f;
+        float right =  panelW / 2f;
+
+        // Background panel — cyan accent strip (matches unicycle trim #28C8E6), dark body.
+        VertexConsumer bg = buffer.getBuffer(RenderType.textBackground());
+        bg.addVertex(mat, left,  panelTop, 0f).setColor(0xFF28C8E6).setLight(packedLight);
+        bg.addVertex(mat, left,  accentBot, 0f).setColor(0xFF28C8E6).setLight(packedLight);
+        bg.addVertex(mat, right, accentBot, 0f).setColor(0xFF28C8E6).setLight(packedLight);
+        bg.addVertex(mat, right, panelTop,  0f).setColor(0xFF28C8E6).setLight(packedLight);
+        bg.addVertex(mat, left,  accentBot,   0f).setColor(0xB8101010).setLight(packedLight);
+        bg.addVertex(mat, left,  panelBottom, 0f).setColor(0xB8101010).setLight(packedLight);
+        bg.addVertex(mat, right, panelBottom, 0f).setColor(0xB8101010).setLight(packedLight);
+        bg.addVertex(mat, right, accentBot,   0f).setColor(0xB8101010).setLight(packedLight);
+
+        if (hasName) {
+            font.drawInBatch(displayName, -nameW / 2f, nameY, 0xFFFFFF, false, mat, buffer,
+                             Font.DisplayMode.NORMAL, 0, packedLight);
         }
-        super.renderNameTag(entity, entity.getStatsLine(), poseStack, buffer, packedLight, partialTick);
+        font.drawInBatch(stats, -statsW / 2f, statsY, 0xFFFFFF, false, mat, buffer,
+                         Font.DisplayMode.NORMAL, 0, packedLight);
+
         poseStack.popPose();
     }
 

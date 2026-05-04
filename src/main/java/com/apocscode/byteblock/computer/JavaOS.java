@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import net.minecraft.nbt.CompoundTag;
 
 /**
  * JavaOS — the operating system kernel for ByteBlock computers.
@@ -39,6 +40,9 @@ public class JavaOS {
     private float textScale = 2.0f;
     /** Last gps_tool:* JSON payload received on channel 9100 (without the prefix). Null if none. */
     private volatile String lastGpsToolBroadcast = null;
+    /** Durable key/value app settings persisted through ComputerBlockEntity NBT. */
+    private final Map<String, String> persistentData = new LinkedHashMap<>();
+    private boolean persistentDataDirty = false;
 
     // Drive mount system — maps drive letters (D, E, ...) to detected drives
     private final Map<Character, DriveBlockEntity> mountedDrives = new LinkedHashMap<>();
@@ -46,6 +50,32 @@ public class JavaOS {
     // World reference (set each tick by block entity)
     private transient net.minecraft.world.level.Level level;
     private transient net.minecraft.core.BlockPos blockPos;
+
+    // Snapshot of nearby block entities, refreshed each server tick on the
+    // server thread, then read freely from Lua coroutine threads. Avoids the
+    // server-thread/coroutine-thread deadlock that occurs if Lua code tries to
+    // walk chunks via Level.getChunk(...) (which dispatches via
+    // CompletableFuture.join on the main thread, which is itself blocked
+    // resuming the coroutine). Volatile so coroutine threads always see the
+    // latest published snapshot.
+    private volatile java.util.Map<net.minecraft.core.BlockPos,
+            net.minecraft.world.level.block.entity.BlockEntity> peripheralSnapshot
+            = java.util.Collections.emptyMap();
+    private long lastPeripheralSnapshotTick = -1L;
+
+    // Pre-resolved on the server thread so Lua coroutine threads never call
+    // level.getCapability() (which schedules back to the server thread via
+    // CompletableFuture, causing the coroutine↔server-thread deadlock).
+    private volatile java.util.Map<net.minecraft.core.BlockPos, String> peripheralTypeCache
+            = java.util.Collections.emptyMap();
+    private volatile java.util.Map<net.minecraft.core.BlockPos, org.luaj.vm2.LuaTable> peripheralTableCache
+            = java.util.Collections.emptyMap();
+    // IItemHandler for the 6 positions directly adjacent to the computer.
+    // Populated server-thread-only so pushItems/pullItems closures never
+    // need to call level.getCapability() from the Lua coroutine thread.
+    private volatile java.util.Map<net.minecraft.core.BlockPos,
+            net.neoforged.neoforge.items.IItemHandler> adjacentItemHandlerCache
+            = java.util.Collections.emptyMap();
 
     // Optional entity host (set by entity-hosted computers like RobotEntity)
     private transient net.minecraft.world.entity.Entity host;
@@ -512,6 +542,19 @@ public class JavaOS {
     }
 
     private void tickBoot() {
+        // Skip the boot animation on first startup — only show it on explicit reboot.
+        if (!rebooting) {
+            state = State.RUNNING;
+            terminal.setTextColor(0);
+            terminal.setBackgroundColor(15);
+            terminal.clear();
+            if (fileSystem.exists("/startup.lua") && fileSystem.isFile("/startup.lua")) {
+                launchProgram(new com.apocscode.byteblock.computer.programs.LuaShellProgram("/startup.lua"));
+            } else {
+                launchProgram(new DesktopProgram());
+            }
+            return;
+        }
         bootTick++;
         if (bootTick == 1) {
             terminal.setTextColor(4); // yellow
@@ -529,8 +572,13 @@ public class JavaOS {
             terminal.setTextColor(0);
             terminal.setBackgroundColor(15);
             terminal.clear();
-            // Launch the desktop/shell
-            launchProgram(new DesktopProgram());
+            // Auto-run /startup.lua if present (CC:Tweaked-style autorun).
+            // To disable, delete or rename /startup.lua.
+            if (fileSystem.exists("/startup.lua") && fileSystem.isFile("/startup.lua")) {
+                launchProgram(new com.apocscode.byteblock.computer.programs.LuaShellProgram("/startup.lua"));
+            } else {
+                launchProgram(new DesktopProgram());
+            }
         }
     }
 
@@ -755,6 +803,37 @@ public class JavaOS {
         state = State.BOOT;
     }
 
+    /**
+     * Restart the OS immediately into RUNNING state, skipping the boot animation.
+     * Use this when re-opening the terminal after the user closed it (ESC).
+     * Use {@link #reboot()} only when the user explicitly chose "Reboot" from the menu.
+     */
+    public void restartSilent() {
+        for (OSProgram proc : processes) {
+            proc.shutdown();
+        }
+        processes.clear();
+        foregroundProgram = null;
+        eventQueue.clear();
+        timers.clear();
+        alarms.clear();
+        nextTimerId = 1;
+        nextAlarmId = 1;
+        prevWorldHour = -1;
+        tickCount = 0;
+        bootTick = 0;
+        rebooting = false;
+        state = State.RUNNING;
+        terminal.setTextColor(0);
+        terminal.setBackgroundColor(15);
+        terminal.clear();
+        if (fileSystem.exists("/startup.lua") && fileSystem.isFile("/startup.lua")) {
+            launchProgram(new com.apocscode.byteblock.computer.programs.LuaShellProgram("/startup.lua"));
+        } else {
+            launchProgram(new DesktopProgram());
+        }
+    }
+
     // --- Getters ---
 
     public TerminalBuffer getTerminal() { return terminal; }
@@ -776,6 +855,223 @@ public class JavaOS {
     public void setWorldContext(net.minecraft.world.level.Level level, net.minecraft.core.BlockPos pos) {
         this.level = level;
         this.blockPos = pos;
+    }
+
+    /**
+     * Returns the most recently published map of {@link net.minecraft.core.BlockPos} to
+     * {@link net.minecraft.world.level.block.entity.BlockEntity} within Bluetooth range
+     * of this computer. Safe to read from any thread (volatile reference, immutable map).
+     * Returns an empty map until the first call to {@link #refreshPeripheralSnapshot()}.
+     */
+    public java.util.Map<net.minecraft.core.BlockPos,
+            net.minecraft.world.level.block.entity.BlockEntity> getPeripheralSnapshot() {
+        return peripheralSnapshot;
+    }
+
+    public java.util.Map<net.minecraft.core.BlockPos, String> getPeripheralTypeCache() {
+        return peripheralTypeCache;
+    }
+
+    public java.util.Map<net.minecraft.core.BlockPos, org.luaj.vm2.LuaTable> getPeripheralTableCache() {
+        return peripheralTableCache;
+    }
+
+    public java.util.Map<net.minecraft.core.BlockPos,
+            net.neoforged.neoforge.items.IItemHandler> getAdjacentItemHandlerCache() {
+        return adjacentItemHandlerCache;
+    }
+
+    /** Returns a durable value persisted in block entity NBT, or null when missing. */
+    public String getPersistentValue(String key) {
+        if (key == null || key.isBlank()) return null;
+        return persistentData.get(key);
+    }
+
+    /** Stores a durable value persisted in block entity NBT. */
+    public void setPersistentValue(String key, String value) {
+        if (key == null || key.isBlank()) return;
+        String prev = persistentData.put(key, value == null ? "" : value);
+        String next = persistentData.get(key);
+        if ((prev == null && next != null) || (prev != null && !prev.equals(next))) {
+            persistentDataDirty = true;
+        }
+    }
+
+    public void removePersistentValue(String key) {
+        if (key == null || key.isBlank()) return;
+        if (persistentData.remove(key) != null) {
+            persistentDataDirty = true;
+        }
+    }
+
+    public CompoundTag savePersistentData() {
+        CompoundTag tag = new CompoundTag();
+        for (Map.Entry<String, String> entry : persistentData.entrySet()) {
+            if (entry.getKey() == null || entry.getKey().isBlank()) continue;
+            tag.putString(entry.getKey(), entry.getValue() == null ? "" : entry.getValue());
+        }
+        return tag;
+    }
+
+    public void loadPersistentData(CompoundTag tag) {
+        persistentData.clear();
+        if (tag == null) {
+            persistentDataDirty = false;
+            return;
+        }
+        for (String key : tag.getAllKeys()) {
+            persistentData.put(key, tag.getString(key));
+        }
+        persistentDataDirty = false;
+    }
+
+    public boolean isPersistentDataDirty() {
+        return persistentDataDirty;
+    }
+
+    public void clearPersistentDataDirty() {
+        persistentDataDirty = false;
+    }
+
+    /**
+     * Walks the loaded chunks within Bluetooth range and publishes a snapshot of
+     * every {@link BlockEntity} keyed by position. MUST be called on the server thread.
+     * Throttled internally so it only rebuilds the snapshot at most once per 10 game
+     * ticks (~0.5s) per computer.
+     */
+    public void refreshPeripheralSnapshot() {
+        if (level == null || blockPos == null) return;
+        if (level.isClientSide()) return;
+        if (!(level instanceof net.minecraft.server.level.ServerLevel sl)) return;
+        long t = level.getGameTime();
+        if (lastPeripheralSnapshotTick >= 0 && (t - lastPeripheralSnapshotTick) < 10) return;
+        lastPeripheralSnapshotTick = t;
+
+        int r = com.apocscode.byteblock.network.BluetoothNetwork.BLOCK_RANGE;
+        int x0 = blockPos.getX() - r, x1 = blockPos.getX() + r;
+        int y0 = Math.max(level.getMinBuildHeight(), blockPos.getY() - r);
+        int y1 = Math.min(level.getMaxBuildHeight() - 1, blockPos.getY() + r);
+        int z0 = blockPos.getZ() - r, z1 = blockPos.getZ() + r;
+        int cx0 = x0 >> 4, cx1 = x1 >> 4;
+        int cz0 = z0 >> 4, cz1 = z1 >> 4;
+        net.minecraft.server.level.ServerChunkCache scc = sl.getChunkSource();
+        java.util.Map<net.minecraft.core.BlockPos,
+                net.minecraft.world.level.block.entity.BlockEntity> snap = new java.util.HashMap<>();
+        int chunksLoaded = 0, chunksUnloaded = 0;
+        for (int cx = cx0; cx <= cx1; cx++) {
+            for (int cz = cz0; cz <= cz1; cz++) {
+                net.minecraft.world.level.chunk.LevelChunk chunk = scc.getChunkNow(cx, cz);
+                if (chunk == null) { chunksUnloaded++; continue; }
+                chunksLoaded++;
+                for (var entry : chunk.getBlockEntities().entrySet()) {
+                    net.minecraft.core.BlockPos bp = entry.getKey();
+                    if (bp.getX() < x0 || bp.getX() > x1) continue;
+                    if (bp.getY() < y0 || bp.getY() > y1) continue;
+                    if (bp.getZ() < z0 || bp.getZ() > z1) continue;
+                    net.minecraft.world.level.block.entity.BlockEntity be = entry.getValue();
+                    if (be != null) snap.put(bp, be);
+                }
+            }
+        }
+        peripheralSnapshot = java.util.Collections.unmodifiableMap(snap);
+
+        // Pre-resolve adapters and build Lua tables on the server thread.
+        // This is the critical step: level.getCapability() must only be called
+        // here (server thread), never from the Lua coroutine thread.
+        java.util.Map<net.minecraft.core.BlockPos, String> typeSnap = new java.util.HashMap<>();
+        java.util.Map<net.minecraft.core.BlockPos, org.luaj.vm2.LuaTable> tableSnap = new java.util.HashMap<>();
+        // Pre-compute which positions are directly adjacent (for __side injection).
+        java.util.Map<net.minecraft.core.BlockPos, String> adjSideMap = new java.util.HashMap<>();
+        for (net.minecraft.core.Direction dir : net.minecraft.core.Direction.values()) {
+            adjSideMap.put(blockPos.relative(dir),
+                com.apocscode.byteblock.computer.peripheral.PeripheralRegistry.directionToSide(dir));
+        }
+        for (var entry : snap.entrySet()) {
+            net.minecraft.core.BlockPos bp = entry.getKey();
+            net.minecraft.world.level.block.entity.BlockEntity be = entry.getValue();
+            for (com.apocscode.byteblock.computer.peripheral.IPeripheralAdapter adapter
+                    : com.apocscode.byteblock.computer.peripheral.PeripheralRegistry.getAdapters()) {
+                try {
+                    if (adapter.canAdapt(be)) {
+                        String type = adapter.getType(be);
+                        typeSnap.put(bp, type);
+                        org.luaj.vm2.LuaTable tbl = adapter.buildTable(be, this);
+                        // Inject __side so peripheral.getName(handle) works (CC-compat liveness check).
+                        String side = adjSideMap.get(bp);
+                        if (side != null) {
+                            tbl.rawset(org.luaj.vm2.LuaValue.valueOf("__side"),
+                                       org.luaj.vm2.LuaValue.valueOf(side));
+                        }
+                        tableSnap.put(bp, tbl);
+                        break;
+                    }
+                } catch (Exception e) {
+                    javaLog("adapter " + adapter.getClass().getSimpleName()
+                            + " threw on " + be.getClass().getSimpleName()
+                            + " at " + bp + ": " + e);
+                }
+            }
+        }
+        peripheralTypeCache  = java.util.Collections.unmodifiableMap(typeSnap);
+        peripheralTableCache = java.util.Collections.unmodifiableMap(tableSnap);
+        // Cache IItemHandler for all 6 directly adjacent positions so pushItems/pullItems
+        // closures can resolve destination handlers without calling level.getCapability()
+        // from the Lua coroutine thread (which deadlocks via CompletableFuture.join).
+        java.util.Map<net.minecraft.core.BlockPos,
+                net.neoforged.neoforge.items.IItemHandler> adjHandlerSnap = new java.util.HashMap<>();
+        for (net.minecraft.core.Direction dir : net.minecraft.core.Direction.values()) {
+            net.minecraft.core.BlockPos adjPos = blockPos.relative(dir);
+            net.neoforged.neoforge.items.IItemHandler ih = level.getCapability(
+                    net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK, adjPos, null);
+            if (ih != null) adjHandlerSnap.put(adjPos, ih);
+        }
+        adjacentItemHandlerCache = java.util.Collections.unmodifiableMap(adjHandlerSnap);
+        // Log summary every snapshot so we can correlate with Lua failures.
+        // Throttled to once per ~5s (every 100 ticks) to avoid log spam.
+        if ((t % 100) == 0) {
+            StringBuilder typeList = new StringBuilder();
+            int extra = 0;
+            int shown = 0;
+            for (var be : snap.values()) {
+                String cn = be.getClass().getSimpleName();
+                if (shown < 12) {
+                    if (typeList.length() > 0) typeList.append(',');
+                    typeList.append(cn);
+                    shown++;
+                } else { extra++; }
+            }
+            javaLog(String.format(
+                "snapshot refresh: tick=%d computer=(%d,%d,%d) range=%d chunks=%d/%d snap.size=%d types=[%s%s]",
+                t, blockPos.getX(), blockPos.getY(), blockPos.getZ(), r,
+                chunksLoaded, (chunksLoaded + chunksUnloaded), snap.size(),
+                typeList.toString(), extra > 0 ? (",+" + extra + " more") : ""));
+        }
+    }
+
+    /**
+     * Append a line to {@code <computerDir>/java_debug.log}. Used for diagnosing
+     * peripheral discovery and other server-side issues from outside Lua.
+     * Thread-safe and best-effort: failures are silently swallowed.
+     */
+    public void javaLog(String msg) {
+        if (level == null) return;
+        try {
+            java.nio.file.Path dir = com.apocscode.byteblock.computer.VfsDiskMirror
+                    .computerDir(level, computerId);
+            if (dir == null) return;
+            java.nio.file.Path file = dir.resolve("java_debug.log");
+            // 200KB cap — wipe and start over if too big.
+            try {
+                if (java.nio.file.Files.exists(file) && java.nio.file.Files.size(file) > 200_000) {
+                    java.nio.file.Files.delete(file);
+                }
+            } catch (Exception ignored) {}
+            String line = "[" + java.time.LocalTime.now().withNano(0) + "] " + msg + System.lineSeparator();
+            java.nio.file.Files.writeString(file, line,
+                    java.nio.charset.StandardCharsets.UTF_8,
+                    java.nio.file.StandardOpenOption.CREATE,
+                    java.nio.file.StandardOpenOption.APPEND);
+        } catch (Exception ignored) {}
     }
 
     public net.minecraft.world.entity.Entity getHost() { return host; }

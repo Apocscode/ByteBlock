@@ -2,6 +2,20 @@
 
 An in-game Java computer simulator for Minecraft 1.21.1 (NeoForge 21.1.215, Java 21).
 
+## Current Test Target
+
+- Primary validation target is the CurseForge pack `All the Mods 10 (ATM10)`.
+- Local dev client (`runs/client`) remains useful for quick iteration, but release-readiness checks should be done in ATM10.
+- The current stabilization work is focused on large Lua startup scripts, monitor rendering behavior, and inventory/peripheral access reliability under heavy modpack load.
+
+## Recent Stability Notes
+
+- Lua peripheral access paths were moved toward server-thread-safe snapshot/cached lookups to reduce deadlock risk in modpack environments.
+- Large virtual file payload persistence was updated to avoid NBT string-size limits by storing UTF-8 byte arrays.
+- Monitor rendering behavior received additional cleanup paths for explicit blank mode transitions.
+
+See `SESSION_LOG.md` and `CHANGELOG.md` for the latest task-by-task updates.
+
 ByteBlock adds programmable **Computer** blocks with a desktop-style OS, a **Bluetooth**-style wireless
 networking layer, and a small ecosystem of peripheral blocks — scanners, monitors, redstone relays,
 button panels, disks, and more — so you can build everything from a simple lamp switchboard to an

@@ -27,6 +27,11 @@ public class PeripheralRegistry {
         ADAPTERS.add(adapter);
     }
 
+    /** Read-only view of all registered adapters (in registration order). */
+    public static List<IPeripheralAdapter> getAdapters() {
+        return java.util.Collections.unmodifiableList(ADAPTERS);
+    }
+
     /**
      * Called once during mod setup to register built-in adapters.
      * Only registers adapters for mods that are currently loaded.
@@ -88,6 +93,24 @@ public class PeripheralRegistry {
         Direction dir = sideToDirection(side);
         if (dir == null) return null;
         return find(level, computerPos, dir);
+    }
+
+    /**
+     * Snapshot-based lookup. SAFE to call from a Lua coroutine thread. The
+     * snapshot is built on the server thread (see JavaOS.refreshPeripheralSnapshot)
+     * so this method never touches Level.getBlockEntity or the chunk cache.
+     */
+    public static AdapterResult findBySideFromSnapshot(
+            BlockPos computerPos, String side,
+            java.util.Map<BlockPos, BlockEntity> snapshot) {
+        Direction dir = sideToDirection(side);
+        if (dir == null) return null;
+        BlockEntity be = snapshot.get(computerPos.relative(dir));
+        if (be == null) return null;
+        for (IPeripheralAdapter adapter : ADAPTERS) {
+            if (adapter.canAdapt(be)) return new AdapterResult(adapter, be);
+        }
+        return null;
     }
 
     /** Find the first peripheral of the given type on any of the 6 sides. */

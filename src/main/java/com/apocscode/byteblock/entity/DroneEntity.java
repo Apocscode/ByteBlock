@@ -8,6 +8,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.Container;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
@@ -25,11 +26,24 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
+import java.util.Base64;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.PriorityQueue;
 import java.util.Queue;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -45,11 +59,30 @@ import java.util.UUID;
  *   "drone:refuel:<ticks>"   — add fuel
  */
 public class DroneEntity extends PathfinderMob implements net.minecraft.world.MenuProvider {
-    private static final int MAX_FUEL = 72000;
+    public static final int MAX_FUEL = 72000;
     private static final int HOVER_DRAIN_PERIOD = 20; // 1 fuel per second while hovering
     private static final int LOW_FUEL_THRESHOLD = 400; // ~20s — auto-return-home trigger
 
     private static final EntityDataAccessor<Boolean> DATA_CHARGING =
+            SynchedEntityData.defineId(DroneEntity.class, EntityDataSerializers.BOOLEAN);
+    private static final EntityDataAccessor<Integer> DATA_FUEL =
+            SynchedEntityData.defineId(DroneEntity.class, EntityDataSerializers.INT);
+    private static final EntityDataAccessor<Integer> DATA_HOME_X =
+            SynchedEntityData.defineId(DroneEntity.class, EntityDataSerializers.INT);
+    private static final EntityDataAccessor<Integer> DATA_HOME_Y =
+            SynchedEntityData.defineId(DroneEntity.class, EntityDataSerializers.INT);
+    private static final EntityDataAccessor<Integer> DATA_HOME_Z =
+            SynchedEntityData.defineId(DroneEntity.class, EntityDataSerializers.INT);
+    private static final EntityDataAccessor<java.util.Optional<java.util.UUID>> DATA_DRONE_ID =
+            SynchedEntityData.defineId(DroneEntity.class, EntityDataSerializers.OPTIONAL_UUID);
+    /** Entity ID of the current laser target; -1 = no target. Synced to client for beam rendering. */
+    private static final EntityDataAccessor<Integer> DATA_LASER_TARGET =
+            SynchedEntityData.defineId(DroneEntity.class, EntityDataSerializers.INT);
+    /** Bluetooth channel — synced to client so the drone GUI screen can display/change it. */
+    private static final EntityDataAccessor<Integer> DATA_CHANNEL =
+            SynchedEntityData.defineId(DroneEntity.class, EntityDataSerializers.INT);
+    /** True while the drone is docked on a charge pad (even when fully charged). */
+    private static final EntityDataAccessor<Boolean> DATA_DOCKED =
             SynchedEntityData.defineId(DroneEntity.class, EntityDataSerializers.BOOLEAN);
 
     private UUID ownerId = null;
@@ -60,15 +93,23 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
     private boolean hovering = true;
     private int fuelTicks = 6000; // 5 minutes of flight
     private int hoverDrainCounter = 0;
+    /** Ticks remaining before A* re-plan is allowed again (prevents thrashing). */
+    private int replanCooldown = 0;
     private final SimpleContainer inventory = new SimpleContainer(9);
     private ItemStack batteryStack = ItemStack.EMPTY;
     private ItemStack gpsToolStack = ItemStack.EMPTY;
     private com.apocscode.byteblock.entity.EntityPaint paint = new com.apocscode.byteblock.entity.EntityPaint();
     private BlockPos homePos = null;
+    /** Manually assigned home charging pad — overrides homePos for low-fuel return. */
+    private BlockPos chargePad = null;
     private boolean defender = false;  // attack nearby hostiles if true
     private int attackCooldown = 0;
+    private int laserCooldown  = 0;
     private String swarmGroup = "";    // if non-empty, drone only obeys "drone:swarm:<group>:..." on its channel
     private DroneVariant variant = DroneVariant.STANDARD;
+
+    /** 4 upgrade card slots — Range, Speed, Inventory, etc. */
+    private final SimpleContainer upgradeSlots = new SimpleContainer(4);
 
     // GPS-tool programming — persistent fleet tasks.
     private BlockPos routeSource = null;
@@ -80,10 +121,26 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
     private boolean patrolActive = false;
     private int patrolCornerIdx = 0;
 
+    // Mission VM state (loaded from BT mission payloads).
+    private final List<String> missionLines = new ArrayList<>();
+    private final Map<String, Integer> missionLabels = new HashMap<>();
+    private final java.util.Deque<MissionLoop> missionLoops = new ArrayDeque<>();
+    private boolean missionActive = false;
+    private int missionPc = 0;
+    private int missionWaitTicks = 0;
+
+    private record MissionLoop(int startPc, int remaining) {}
+
     public DroneEntity(EntityType<? extends DroneEntity> type, Level level) {
         super(type, level);
         this.setNoGravity(true);
         this.droneId = UUID.randomUUID();
+    }
+
+    @Override
+    public boolean causeFallDamage(float fallDistance, float damageMultiplier,
+            net.minecraft.world.damagesource.DamageSource source) {
+        return false; // drones never take fall damage
     }
 
     public static AttributeSupplier.Builder createAttributes() {
@@ -97,12 +154,22 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
     protected void defineSynchedData(SynchedEntityData.Builder builder) {
         super.defineSynchedData(builder);
         builder.define(DATA_CHARGING, false);
+        builder.define(DATA_FUEL, 0);
+        builder.define(DATA_HOME_X, Integer.MIN_VALUE);
+        builder.define(DATA_HOME_Y, Integer.MIN_VALUE);
+        builder.define(DATA_HOME_Z, Integer.MIN_VALUE);
+        builder.define(DATA_DRONE_ID, java.util.Optional.empty());
+        builder.define(DATA_LASER_TARGET, -1);
+        builder.define(DATA_CHANNEL, 1);
+        builder.define(DATA_DOCKED, false);
     }
 
     private int chargingTicks = 0;
+    private int dockedTicks = 0;
     private boolean wasChargingLastTick = false;
-    public void markCharging() { this.chargingTicks = 30; }
+    public void markCharging() { this.chargingTicks = 30; this.dockedTicks = 60; }
     public boolean isCharging() { return entityData.get(DATA_CHARGING); }
+    public boolean isDocked()   { return entityData.get(DATA_DOCKED); }
 
     @Override
     public void tick() {
@@ -118,7 +185,7 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
         boolean charging = chargingTicks > 0;
         if (chargingTicks > 0) chargingTicks--;
         if (entityData.get(DATA_CHARGING) != charging) entityData.set(DATA_CHARGING, charging);
-        if (charging && level() instanceof net.minecraft.server.level.ServerLevel sl) {
+        if (charging && fuelTicks < MAX_FUEL && level() instanceof net.minecraft.server.level.ServerLevel sl) {
             if (!wasChargingLastTick) {
                 level().playSound(null, blockPosition(),
                         net.minecraft.sounds.SoundEvents.BEACON_ACTIVATE,
@@ -129,16 +196,38 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
                         net.minecraft.sounds.SoundEvents.AMETHYST_BLOCK_CHIME,
                         net.minecraft.sounds.SoundSource.NEUTRAL, 0.3f, 1.5f);
             }
-            sl.sendParticles(net.minecraft.core.particles.ParticleTypes.ELECTRIC_SPARK,
-                    getX(), getY() + 0.3, getZ(), 3, 0.3, 0.2, 0.3, 0.05);
+            sl.sendParticles(net.minecraft.core.particles.ParticleTypes.HAPPY_VILLAGER,
+                    getX(), getY() + 0.3, getZ(), 1, 0.3, 0.2, 0.3, 0.05);
         }
         wasChargingLastTick = charging;
 
-        // Auto-return-home when fuel is low and we're idle
-        if (fuelTicks > 0 && fuelTicks < LOW_FUEL_THRESHOLD && waypoints.isEmpty() && homePos != null) {
-            Vec3 home = new Vec3(homePos.getX() + 0.5, homePos.getY() + 1, homePos.getZ() + 0.5);
-            if (position().distanceTo(home) > 1.5) {
-                addWaypoint(home);
+        // Docked-on-pad state — refreshed by markCharging(), cleared when new waypoints added.
+        if (dockedTicks > 0) dockedTicks--;
+        boolean docked = dockedTicks > 0;
+        if (entityData.get(DATA_DOCKED) != docked) entityData.set(DATA_DOCKED, docked);
+
+        // Sync fuel, home position, and droneId to client every 10 ticks.
+        if (level().getGameTime() % 10 == 0) {
+            getEntityData().set(DATA_FUEL, fuelTicks);
+            if (homePos != null) {
+                getEntityData().set(DATA_HOME_X, homePos.getX());
+                getEntityData().set(DATA_HOME_Y, homePos.getY());
+                getEntityData().set(DATA_HOME_Z, homePos.getZ());
+            }
+            getEntityData().set(DATA_DRONE_ID, java.util.Optional.of(droneId));
+        }
+
+        // Drive mission VM while idle so scripts can enqueue waypoints/actions.
+        tickMissionScript();
+
+        // Auto-return when fuel is low and idle — prefer assigned charge pad over home pos
+        if (fuelTicks > 0 && fuelTicks < LOW_FUEL_THRESHOLD && waypoints.isEmpty() && !missionActive) {
+            BlockPos target = chargePad != null ? chargePad : homePos;
+            if (target != null) {
+                Vec3 dest = new Vec3(target.getX() + 0.5, target.getY() + 1, target.getZ() + 0.5);
+                if (position().distanceTo(dest) > 1.5) {
+                    navigateTo(dest); // A*-plan a clear path home
+                }
             }
         }
 
@@ -152,16 +241,32 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
         }
 
         // Process waypoints
+        if (replanCooldown > 0) replanCooldown--;
         if (!waypoints.isEmpty() && fuelTicks > 0) {
             Vec3 target = waypoints.peek();
             Vec3 current = position();
-            Vec3 direction = target.subtract(current);
-            double dist = direction.length();
+            double dist = current.distanceTo(target);
             if (dist < 0.5) {
                 waypoints.poll();
             } else {
-                Vec3 move = direction.normalize().scale(0.2);
-                setDeltaMovement(move);
+                // Dynamic obstacle check: if the block directly ahead is now solid and
+                // we're not in a cooldown, discard the stale planned path and re-plan.
+                Vec3 toTarget = target.subtract(current);
+                double hLen = Math.sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
+                if (hLen > 0.1 && replanCooldown == 0) {
+                    double hx = toTarget.x / hLen, hz = toTarget.z / hLen;
+                    BlockPos probe = BlockPos.containing(current.x + hx, current.y + 0.5, current.z + hz);
+                    if (!isPassable(probe)) {
+                        // New obstacle detected mid-flight — re-plan to the final waypoint.
+                        // Drain remaining waypoints to find the real destination.
+                        Vec3 finalTarget = target;
+                        for (Vec3 wp : waypoints) finalTarget = wp;
+                        replanCooldown = 40; // wait 2 seconds before re-planning again
+                        navigateTo(finalTarget);
+                        target = waypoints.isEmpty() ? target : waypoints.peek();
+                    }
+                }
+                setDeltaMovement(computeFlightMove(current, target));
                 fuelTicks--;
             }
         }
@@ -175,18 +280,18 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
                     if (position().distanceToSqr(src) < 4.0) {
                         pickupFromContainer(routeSource, 64);
                         routePhase = 1;
-                        addWaypoint(new Vec3(routeDest.getX() + 0.5, routeDest.getY() + 1.5, routeDest.getZ() + 0.5));
+                        navigateTo(new Vec3(routeDest.getX() + 0.5, routeDest.getY() + 1.5, routeDest.getZ() + 0.5));
                     } else {
-                        addWaypoint(src);
+                        navigateTo(src);
                     }
                 } else {
                     Vec3 dst = new Vec3(routeDest.getX() + 0.5, routeDest.getY() + 1.5, routeDest.getZ() + 0.5);
                     if (position().distanceToSqr(dst) < 4.0) {
                         dropIntoContainer(routeDest, 64);
                         routePhase = 0;
-                        addWaypoint(new Vec3(routeSource.getX() + 0.5, routeSource.getY() + 1.5, routeSource.getZ() + 0.5));
+                        navigateTo(new Vec3(routeSource.getX() + 0.5, routeSource.getY() + 1.5, routeSource.getZ() + 0.5));
                     } else {
-                        addWaypoint(dst);
+                        navigateTo(dst);
                     }
                 }
             } else if (patrolActive && patrolMin != null && patrolMax != null) {
@@ -231,7 +336,259 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
                 }
             }
         }
+
+        // Laser upgrade — ranged attack, fires every 0.5 s at nearest hostile within 16 blocks.
+        if (!level().isClientSide()) {
+            if (hasLaserUpgrade()) {
+                if (laserCooldown > 0) laserCooldown--;
+                LivingEntity laserTarget = findNearestHostile(16.0);
+                int newId = laserTarget != null ? laserTarget.getId() : -1;
+                if (getEntityData().get(DATA_LASER_TARGET) != newId)
+                    getEntityData().set(DATA_LASER_TARGET, newId);
+                if (laserTarget != null && laserCooldown <= 0) {
+                    laserTarget.hurt(damageSources().mobAttack(this), 6.0f);
+                    laserCooldown = 10;
+                }
+            } else if (getEntityData().get(DATA_LASER_TARGET) != -1) {
+                getEntityData().set(DATA_LASER_TARGET, -1);
+            }
+        }
     }
+
+    private static final double FLIGHT_SPEED     = 0.2;
+    private static final double VERT_SPEED       = 0.15;
+    private static final double CRUISE_CLEARANCE = 5.0;  // fallback climb-first clearance
+    private static final double CLIMB_FIRST_DIST = 5.0;  // fallback minimum h-distance
+    private static final double SEPARATION_RADIUS = 3.5; // drone-drone repulsion radius
+    private static final int    ASTAR_MAX_NODES  = 1500; // A* node budget per search
+    private static final int    ASTAR_MAX_DIST   = 128;  // Manhattan-block cap before fallback
+
+    /** Last explicitly planned destination — used to chain A* waypoint calls. */
+    private Vec3 lastPlannedPos = null;
+
+    /**
+     * Steers the drone one tick toward {@code target}. A* pre-planning means the
+     * path should be obstacle-free; this method just provides smooth movement
+     * plus a 1-block safety probe to handle any edge cases.
+     */
+    private Vec3 computeFlightMove(Vec3 from, Vec3 target) {
+        Vec3 toTarget = target.subtract(from);
+        double hLen = Math.sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
+        double dy   = toTarget.y;
+        double hx   = hLen > 0.001 ? toTarget.x / hLen : 0;
+        double hz   = hLen > 0.001 ? toTarget.z / hLen : 0;
+
+        Vec3 sep = computeDroneSeparation(from);
+
+        // Prioritise vertical if we still need to climb significantly.
+        if (dy > VERT_SPEED + 0.1) {
+            double hFrac = Math.max(0.0, 1.0 - dy / CRUISE_CLEARANCE);
+            double hStep = Math.min(FLIGHT_SPEED * hFrac, hLen);
+            return new Vec3(hx * hStep + sep.x, VERT_SPEED, hz * hStep + sep.z);
+        }
+
+        double hStep = Math.min(FLIGHT_SPEED, hLen);
+        double moveY = Math.max(-VERT_SPEED, Math.min(VERT_SPEED, dy));
+
+        // Safety probe: if the very next block is occupied, force a climb.
+        if (hLen > 0.1) {
+            double px = from.x + hx, pz = from.z + hz;
+            if (!isPassable(BlockPos.containing(px, from.y + 0.5, pz))) {
+                moveY = VERT_SPEED;
+                hStep *= 0.2;
+            }
+        }
+
+        return new Vec3(hx * hStep + sep.x, moveY, hz * hStep + sep.z);
+    }
+
+    // -------------------------------------------------------------------------
+    // Navigation — A* pathfinding
+    // -------------------------------------------------------------------------
+
+    /**
+     * Clears the waypoint queue and fills it with an A*-planned path to {@code destVec}.
+     * Falls back to climb-first direct flight if the target is out of A* range or
+     * the search budget is exhausted.
+     */
+    private void navigateTo(Vec3 destVec) {
+        waypoints.clear();
+        lastPlannedPos = null;
+        dockedTicks = 0;
+        appendNavigateTo(destVec);
+    }
+
+    /**
+     * Appends an A*-planned path to {@code destVec} without clearing existing waypoints.
+     * Chains from the last planned position so that sequential calls form a coherent route.
+     */
+    private void appendNavigateTo(Vec3 destVec) {
+        dockedTicks = 0;
+        Vec3 from = (lastPlannedPos != null && !waypoints.isEmpty()) ? lastPlannedPos : position();
+        BlockPos startBlock = BlockPos.containing(from.x, from.y, from.z);
+        BlockPos goalBlock  = BlockPos.containing(destVec.x, destVec.y, destVec.z);
+
+        List<Vec3> path = findPath(startBlock, goalBlock, destVec);
+        if (path != null && !path.isEmpty()) {
+            for (Vec3 wp : path) {
+                if (waypoints.size() < 128) waypoints.add(wp);
+            }
+        } else {
+            // Fallback: climb-first then direct.
+            addWithClimbFirst(from, destVec);
+        }
+        lastPlannedPos = destVec;
+    }
+
+    /** Fallback when A* cannot find a path: climb above terrain, cruise, then descend. */
+    private void addWithClimbFirst(Vec3 from, Vec3 dest) {
+        double hDist = Math.sqrt((dest.x - from.x) * (dest.x - from.x)
+                               + (dest.z - from.z) * (dest.z - from.z));
+        if (hDist > CLIMB_FIRST_DIST) {
+            double cruiseY = Math.max(from.y, dest.y) + CRUISE_CLEARANCE;
+            if (waypoints.size() < 128) waypoints.add(new Vec3(from.x, cruiseY, from.z));
+            if (waypoints.size() < 128) waypoints.add(new Vec3(dest.x, cruiseY, dest.z));
+        }
+        if (waypoints.size() < 128) waypoints.add(dest);
+    }
+
+    /**
+     * A* search through 3D block space. Explores 26-directional neighbours and
+     * applies string-pull smoothing to the raw path before returning.
+     *
+     * @return smoothed Vec3 waypoint list, or {@code null} if no path found
+     *         within the node/distance budget.
+     */
+    private List<Vec3> findPath(BlockPos start, BlockPos goal, Vec3 preciseGoal) {
+        int md = Math.abs(goal.getX() - start.getX())
+               + Math.abs(goal.getY() - start.getY())
+               + Math.abs(goal.getZ() - start.getZ());
+        if (md > ASTAR_MAX_DIST) return null;
+        if (md <= 2)             return List.of(preciseGoal);
+
+        Map<BlockPos, Float>    gScore   = new HashMap<>();
+        Map<BlockPos, BlockPos> cameFrom = new HashMap<>();
+        Set<BlockPos>           closed   = new HashSet<>();
+        PriorityQueue<BlockPos> open     = new PriorityQueue<>(
+                Comparator.comparingDouble(p ->
+                        gScore.getOrDefault(p, Float.MAX_VALUE) + astarH(p, goal)));
+
+        gScore.put(start, 0f);
+        open.add(start);
+
+        while (!open.isEmpty() && gScore.size() < ASTAR_MAX_NODES) {
+            BlockPos cur = open.poll();
+            if (closed.contains(cur)) continue;
+            closed.add(cur);
+
+            if (cur.distSqr(goal) <= 2) {
+                return buildSmoothedPath(cameFrom, cur, preciseGoal);
+            }
+
+            float g = gScore.get(cur);
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dz = -1; dz <= 1; dz++) {
+                        if (dx == 0 && dy == 0 && dz == 0) continue;
+                        BlockPos nb = cur.offset(dx, dy, dz);
+                        if (closed.contains(nb) || !isPassable(nb)) continue;
+                        float step = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+                        if (dy < 0) step += 0.5f; // slight penalty for descending
+                        float gNew = g + step;
+                        if (gNew < gScore.getOrDefault(nb, Float.MAX_VALUE)) {
+                            gScore.put(nb, gNew);
+                            cameFrom.put(nb, cur);
+                            open.add(nb); // lazy duplicate; closed set handles it
+                        }
+                    }
+                }
+            }
+        }
+        return null; // budget exhausted
+    }
+
+    private float astarH(BlockPos a, BlockPos b) {
+        int dx = a.getX() - b.getX(), dy = a.getY() - b.getY(), dz = a.getZ() - b.getZ();
+        return (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    /**
+     * Returns {@code true} when a drone body (pos + pos.above) can fit at {@code pos}:
+     * both blocks must have empty collision shapes.
+     */
+    private boolean isPassable(BlockPos pos) {
+        BlockState bs    = level().getBlockState(pos);
+        BlockState bsUp  = level().getBlockState(pos.above());
+        // Reject liquids (water / lava) — they have empty collision shapes but are fatal.
+        if (!bs.getFluidState().isEmpty() || !bsUp.getFluidState().isEmpty()) return false;
+        // Reject fire and soul fire.
+        if (bs.is(BlockTags.FIRE) || bsUp.is(BlockTags.FIRE)) return false;
+        // Standard solid-block collision check.
+        return bs.getCollisionShape(level(), pos).isEmpty()
+            && bsUp.getCollisionShape(level(), pos.above()).isEmpty();
+    }
+
+    /** Traces back {@code cameFrom}, reverses, then string-pulls the result. */
+    private List<Vec3> buildSmoothedPath(Map<BlockPos, BlockPos> cameFrom,
+                                         BlockPos last, Vec3 preciseGoal) {
+        List<Vec3> path = new ArrayList<>();
+        BlockPos cur = last;
+        while (cameFrom.containsKey(cur)) {
+            path.add(Vec3.atCenterOf(cur));
+            cur = cameFrom.get(cur);
+        }
+        Collections.reverse(path);
+        if (path.isEmpty()) { path.add(preciseGoal); return path; }
+        path.set(path.size() - 1, preciseGoal); // snap to exact destination
+
+        // String-pull: skip nodes where a straight line-of-sight already exists.
+        if (path.size() <= 2) return path;
+        List<Vec3> smooth = new ArrayList<>();
+        smooth.add(path.get(0));
+        int i = 0;
+        while (i < path.size() - 1) {
+            int j = path.size() - 1;
+            while (j > i + 1 && !hasLineOfSight(path.get(i), path.get(j))) j--;
+            smooth.add(path.get(j));
+            i = j;
+        }
+        return smooth;
+    }
+
+    /** Checks that every block along the line from {@code a} to {@code b} is passable. */
+    private boolean hasLineOfSight(Vec3 a, Vec3 b) {
+        int steps = (int) Math.ceil(a.distanceTo(b)) + 1;
+        for (int t = 1; t <= steps; t++) {
+            double f = (double) t / steps;
+            if (!isPassable(BlockPos.containing(
+                    a.x + (b.x - a.x) * f,
+                    a.y + (b.y - a.y) * f,
+                    a.z + (b.z - a.z) * f))) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Returns a small repulsion vector away from any other DroneEntity within
+     * SEPARATION_RADIUS blocks, so drones don’t collide when flying in a group.
+     */
+    private Vec3 computeDroneSeparation(Vec3 from) {
+        double rx = 0, ry = 0, rz = 0;
+        for (DroneEntity other : level().getEntitiesOfClass(DroneEntity.class,
+                getBoundingBox().inflate(SEPARATION_RADIUS))) {
+            if (other == this) continue;
+            Vec3 away = from.subtract(other.position());
+            double dist = away.length();
+            if (dist > 0.01 && dist < SEPARATION_RADIUS) {
+                double strength = (SEPARATION_RADIUS - dist) / SEPARATION_RADIUS * 0.08;
+                rx += (away.x / dist) * strength;
+                ry += (away.y / dist) * strength;
+                rz += (away.z / dist) * strength;
+            }
+        }
+        return new Vec3(rx, ry, rz);
+    }
+
 
     private LivingEntity findNearestHostile(double radius) {
         AABB area = getBoundingBox().inflate(radius);
@@ -247,6 +604,19 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
         }
         return best;
     }
+
+    /** Returns true if any installed upgrade card is a laser card. */
+    public boolean hasLaserUpgrade() {
+        for (int i = 0; i < upgradeSlots.getContainerSize(); i++) {
+            net.minecraft.world.item.ItemStack s = upgradeSlots.getItem(i);
+            if (s.getItem() instanceof com.apocscode.byteblock.item.UpgradeCard card
+                    && card.getUpgradeType().isLaserCard()) return true;
+        }
+        return false;
+    }
+
+    /** Entity ID of the current laser target synced to the client; -1 = none. */
+    public int getLaserTargetId() { return getEntityData().get(DATA_LASER_TARGET); }
 
     private void handleBluetoothMessage(String raw) {
         if (raw == null || !raw.startsWith("drone:")) return;
@@ -278,19 +648,30 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
             switch (cmd) {
                 case "waypoint" -> {
                     if (effectiveParts.length >= 5) {
-                        addWaypoint(new Vec3(
+                        appendNavigateTo(new Vec3(
                                 Double.parseDouble(effectiveParts[2]),
                                 Double.parseDouble(effectiveParts[3]),
                                 Double.parseDouble(effectiveParts[4])));
                     }
                 }
                 case "home" -> {
-                    waypoints.clear();
                     if (homePos != null) {
-                        addWaypoint(new Vec3(homePos.getX() + 0.5, homePos.getY() + 1, homePos.getZ() + 0.5));
+                        navigateTo(new Vec3(homePos.getX() + 0.5, homePos.getY() + 1, homePos.getZ() + 0.5));
+                    } else {
+                        waypoints.clear();
                     }
                 }
-                case "clear" -> waypoints.clear();
+                case "setHome" -> {
+                    if (effectiveParts.length >= 5) {
+                        setHomePos(new BlockPos(
+                                Integer.parseInt(effectiveParts[2]),
+                                Integer.parseInt(effectiveParts[3]),
+                                Integer.parseInt(effectiveParts[4])));
+                    } else {
+                        setHomePos(blockPosition());
+                    }
+                }
+                case "clear" -> { waypoints.clear(); lastPlannedPos = null; }
                 case "hover" -> {
                     if (effectiveParts.length >= 3) hovering = Boolean.parseBoolean(effectiveParts[2]);
                 }
@@ -381,15 +762,207 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
                         i += 3;
                     }
                 }
+                case "mission" -> {
+                    if (effectiveParts.length >= 3) {
+                        String decoded = new String(Base64.getDecoder().decode(effectiveParts[2]), StandardCharsets.UTF_8);
+                        loadMission(decoded);
+                        sendPuzzleAck(effectiveParts, "ok");
+                    }
+                }
                 case "stop" -> {
                     waypoints.clear();
                     routeActive = false;
                     patrolActive = false;
+                    missionActive = false;
                 }
                 default -> { /* unknown */ }
             }
         } catch (NumberFormatException ignored) {
             // Malformed command — ignore silently.
+            sendPuzzleAck(effectiveParts, "bad_number");
+        } catch (IllegalArgumentException ignored) {
+            // Malformed base64/UUID payload.
+            sendPuzzleAck(effectiveParts, "bad_payload");
+        }
+    }
+
+    private void sendPuzzleAck(String[] parts, String status) {
+        if (parts == null || parts.length < 5 || level() == null) return;
+        try {
+            UUID target = UUID.fromString(parts[3]);
+            String token = parts[4];
+            BluetoothNetwork.send(level(), blockPosition(), droneId, target, bluetoothChannel,
+                    "puzzle:ack:drone:" + token + ":" + status);
+        } catch (IllegalArgumentException ignored) {
+            // Invalid sender UUID in payload.
+        }
+    }
+
+    private void loadMission(String decoded) {
+        missionLines.clear();
+        missionLabels.clear();
+        missionLoops.clear();
+        missionWaitTicks = 0;
+        missionPc = 0;
+
+        for (String raw : decoded.split("\\R")) {
+            String line = raw == null ? "" : raw.trim();
+            if (line.isEmpty()) continue;
+            if (!line.startsWith("drone:")) continue;
+            missionLines.add(line);
+        }
+        for (int i = 0; i < missionLines.size(); i++) {
+            String[] p = missionLines.get(i).split(":");
+            if (p.length >= 3 && "label".equals(p[1])) {
+                missionLabels.put(p[2], i);
+            }
+        }
+
+        // Mission replaces any running route/patrol queue.
+        waypoints.clear();
+        routeActive = false;
+        patrolActive = false;
+        missionActive = !missionLines.isEmpty();
+    }
+
+    private void tickMissionScript() {
+        if (!missionActive) return;
+        if (missionWaitTicks > 0) {
+            missionWaitTicks--;
+            return;
+        }
+        if (!waypoints.isEmpty()) return;
+
+        int budget = 8; // avoid infinite loop lockups in malformed scripts
+        while (missionActive && missionWaitTicks == 0 && waypoints.isEmpty() && budget-- > 0) {
+            if (missionPc < 0 || missionPc >= missionLines.size()) {
+                missionActive = false;
+                return;
+            }
+
+            String line = missionLines.get(missionPc);
+            String[] p = line.split(":");
+            if (p.length < 2) {
+                missionPc++;
+                continue;
+            }
+
+            String cmd = p[1];
+            switch (cmd) {
+                case "wait" -> {
+                    int ticks = (p.length >= 3) ? parseIntSafe(p[2], 1) : 1;
+                    missionWaitTicks = Math.max(1, ticks);
+                    missionPc++;
+                }
+                case "repeat" -> {
+                    int count = (p.length >= 3) ? parseIntSafe(p[2], 0) : 0;
+                    if (count <= 0) {
+                        int end = findMatchingEndRepeat(missionPc + 1);
+                        missionPc = end >= 0 ? end + 1 : missionPc + 1;
+                    } else {
+                        missionLoops.push(new MissionLoop(missionPc + 1, count));
+                        missionPc++;
+                    }
+                }
+                case "end_repeat" -> {
+                    if (missionLoops.isEmpty()) {
+                        missionPc++;
+                    } else {
+                        MissionLoop top = missionLoops.peek();
+                        if (top.remaining() > 1) {
+                            missionLoops.pop();
+                            missionLoops.push(new MissionLoop(top.startPc(), top.remaining() - 1));
+                            missionPc = top.startPc();
+                        } else {
+                            missionLoops.pop();
+                            missionPc++;
+                        }
+                    }
+                }
+                case "if_fuel_gt" -> {
+                    int need = (p.length >= 3) ? parseIntSafe(p[2], 0) : 0;
+                    if (fuelTicks > need) {
+                        missionPc++;
+                    } else {
+                        int jump = findElseOrEndIf(missionPc + 1);
+                        missionPc = jump >= 0 ? jump + 1 : missionPc + 1;
+                    }
+                }
+                case "else" -> {
+                    int endIf = findEndIf(missionPc + 1);
+                    missionPc = endIf >= 0 ? endIf + 1 : missionPc + 1;
+                }
+                case "end_if", "label" -> missionPc++;
+                case "jump" -> {
+                    if (p.length >= 3 && missionLabels.containsKey(p[2])) {
+                        missionPc = missionLabels.get(p[2]) + 1;
+                    } else {
+                        missionPc++;
+                    }
+                }
+                case "stop" -> {
+                    waypoints.clear();
+                    routeActive = false;
+                    patrolActive = false;
+                    missionActive = false;
+                }
+                default -> {
+                    handleBluetoothMessage(line);
+                    missionPc++;
+                }
+            }
+        }
+    }
+
+    private int findMatchingEndRepeat(int from) {
+        int depth = 0;
+        for (int i = from; i < missionLines.size(); i++) {
+            String[] p = missionLines.get(i).split(":");
+            if (p.length < 2) continue;
+            if ("repeat".equals(p[1])) depth++;
+            else if ("end_repeat".equals(p[1])) {
+                if (depth == 0) return i;
+                depth--;
+            }
+        }
+        return -1;
+    }
+
+    private int findElseOrEndIf(int from) {
+        int depth = 0;
+        for (int i = from; i < missionLines.size(); i++) {
+            String[] p = missionLines.get(i).split(":");
+            if (p.length < 2) continue;
+            if ("if_fuel_gt".equals(p[1])) depth++;
+            else if ("end_if".equals(p[1])) {
+                if (depth == 0) return i;
+                depth--;
+            } else if ("else".equals(p[1]) && depth == 0) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private int findEndIf(int from) {
+        int depth = 0;
+        for (int i = from; i < missionLines.size(); i++) {
+            String[] p = missionLines.get(i).split(":");
+            if (p.length < 2) continue;
+            if ("if_fuel_gt".equals(p[1])) depth++;
+            else if ("end_if".equals(p[1])) {
+                if (depth == 0) return i;
+                depth--;
+            }
+        }
+        return -1;
+    }
+
+    private int parseIntSafe(String s, int fallback) {
+        try {
+            return Integer.parseInt(s.trim());
+        } catch (Exception ignored) {
+            return fallback;
         }
     }
 
@@ -497,6 +1070,7 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
     // --- Programmable API ---
 
     public void addWaypoint(Vec3 target) {
+        this.dockedTicks = 0; // leaving the pad
         if (waypoints.size() < 64) waypoints.add(target);
     }
 
@@ -514,6 +1088,62 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
     public com.apocscode.byteblock.entity.EntityPaint getPaint() { return paint; }
     public void setPaint(com.apocscode.byteblock.entity.EntityPaint p) { this.paint = p == null ? new com.apocscode.byteblock.entity.EntityPaint() : p; }
 
+    /**
+     * Returns the drone's current operation range in blocks, determined by
+     * the highest-tier range card installed in the upgrade slots.
+     * Default (no card): 25 blocks.  Unlimited range card: Integer.MAX_VALUE.
+     */
+    public int getOperationRange() {
+        int best = 25;
+        for (int i = 0; i < upgradeSlots.getContainerSize(); i++) {
+            ItemStack s = upgradeSlots.getItem(i);
+            if (s.getItem() instanceof com.apocscode.byteblock.item.UpgradeCard card
+                    && card.getUpgradeType().isRangeCard()) {
+                if (card.getUpgradeType() == com.apocscode.byteblock.item.UpgradeCard.Type.RANGE_CREATIVE)
+                    return Integer.MAX_VALUE;
+                best = Math.max(best, card.getUpgradeType().range);
+            }
+        }
+        return best;
+    }
+
+    @Override
+    public void checkDespawn() {
+        // Drones never naturally despawn. If no player is within operation range
+        // and the waypoint queue is empty, auto-return to home.
+        if (level().isClientSide()) return;
+        int range = getOperationRange();
+        if (range == Integer.MAX_VALUE) return;
+        net.minecraft.world.entity.player.Player nearest =
+                ((net.minecraft.server.level.ServerLevel) level()).getNearestPlayer(this, -1);
+        if ((nearest == null || nearest.distanceToSqr(this) > (long) range * range)
+                && waypoints.isEmpty() && homePos != null) {
+            Vec3 dest = new Vec3(homePos.getX() + 0.5, homePos.getY() + 1, homePos.getZ() + 0.5);
+            if (position().distanceTo(dest) > 2.0) {
+                addWaypoint(dest);
+            }
+        }
+    }
+
+    @Override
+    public void die(net.minecraft.world.damagesource.DamageSource cause) {
+        super.die(cause);
+        if (!level().isClientSide()) {
+            // Drop the drone as a spawn egg so it can be redeployed.
+            spawnAtLocation(new ItemStack(com.apocscode.byteblock.init.ModItems.DRONE_SPAWN_EGG.get()));
+            // Drop any cargo.
+            for (int i = 0; i < inventory.getContainerSize(); i++) {
+                ItemStack stack = inventory.getItem(i);
+                if (!stack.isEmpty()) spawnAtLocation(stack);
+            }
+            // Drop upgrade cards.
+            for (int i = 0; i < upgradeSlots.getContainerSize(); i++) {
+                ItemStack stack = upgradeSlots.getItem(i);
+                if (!stack.isEmpty()) spawnAtLocation(stack);
+            }
+        }
+    }
+
     /** Pull FE from any battery item in the upgrade slot, converting it into fuel ticks (10 FE = 1 tick). */
     private void tickBatteryDrain() {
         if (batteryStack.isEmpty()) return;
@@ -528,26 +1158,66 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
         if (feTaken > 0) fuelTicks = Math.min(MAX_FUEL, fuelTicks + feTaken / 10);
     }
     public void linkComputer(UUID computerId) { this.linkedComputerId = computerId; }
-    public UUID getDroneId() { return droneId; }
+    public UUID getDroneId() {
+        if (level().isClientSide()) {
+            java.util.Optional<UUID> synced = getEntityData().get(DATA_DRONE_ID);
+            if (synced.isPresent()) return synced.get();
+        }
+        return droneId;
+    }
     public int getBluetoothChannel() { return bluetoothChannel; }
+    /** Client-safe: reads the synced entity data (available on both sides). */
+    public int getSyncedBluetoothChannel() { return getEntityData().get(DATA_CHANNEL); }
 
     /**
      * Build the second-line nameplate stat string, e.g. "♥ 18/20  ⚡ 64%".
      * Energy here represents fuel as a percentage of MAX_FUEL.
      */
+    /** Fuel value synced to the client via SynchedEntityData (updated every 10 ticks). */
+    public int getSyncedFuel() { return getEntityData().get(DATA_FUEL); }
+
     public Component getStatsLine() {
         int hp  = (int) Math.ceil(getHealth());
         int max = (int) getMaxHealth();
-        int pct = MAX_FUEL > 0 ? (fuelTicks * 100 / MAX_FUEL) : 0;
+        // Use synced value so client-side nameplate shows real server fuel.
+        int fuel = getEntityData().get(DATA_FUEL);
+        int pct = MAX_FUEL > 0 ? (fuel * 100 / MAX_FUEL) : 0;
         String pctColor = pct < 20 ? "§c" : pct < 50 ? "§e" : pct < 80 ? "§b" : "§a";
         String hpColor  = hp < max / 3 ? "§c" : hp < max * 2 / 3 ? "§e" : "§a";
-        return Component.literal(hpColor + "♥ " + hp + "/" + max + "  §r" + pctColor + "⚡ " + pct + "%");
+        int hpFilled = max > 0 ? Math.min(4, Math.round(hp * 4f / max)) : 0;
+        int fFilled  = Math.min(4, pct * 4 / 100);
+        StringBuilder hpBar = new StringBuilder();
+        StringBuilder fBar  = new StringBuilder();
+        for (int i = 0; i < 4; i++) hpBar.append(i < hpFilled ? hpColor  + "█" : "§8░");
+        for (int i = 0; i < 4; i++) fBar .append(i < fFilled  ? pctColor + "█" : "§8░");
+        return Component.literal(
+            "§7♥ " + hpBar + " §r" + hpColor + hp + "§8/§7" + max +
+            "  §7⚡ " + fBar + " §r" + pctColor + pct + "§7%"
+        );
     }
-    public void setBluetoothChannel(int ch) { this.bluetoothChannel = Math.max(1, Math.min(65535, ch)); }
+    public void setBluetoothChannel(int ch) {
+        this.bluetoothChannel = Math.max(1, Math.min(65535, ch));
+        getEntityData().set(DATA_CHANNEL, this.bluetoothChannel);
+    }
     public int getWaypointCount() { return waypoints.size(); }
     public SimpleContainer getInventory() { return inventory; }
+    public SimpleContainer getUpgradeSlots() { return upgradeSlots; }
     public BlockPos getHomePos() { return homePos; }
-    public void setHomePos(BlockPos pos) { this.homePos = pos; }
+    public void setHomePos(BlockPos pos) {
+        this.homePos = pos;
+        if (pos != null && !level().isClientSide()) {
+            getEntityData().set(DATA_HOME_X, pos.getX());
+            getEntityData().set(DATA_HOME_Y, pos.getY());
+            getEntityData().set(DATA_HOME_Z, pos.getZ());
+        }
+    }
+    /** Returns the home position synced to the client, or null if not set. */
+    public BlockPos getSyncedHomePos() {
+        int x = getEntityData().get(DATA_HOME_X);
+        return x == Integer.MIN_VALUE ? null : new BlockPos(x, getEntityData().get(DATA_HOME_Y), getEntityData().get(DATA_HOME_Z));
+    }
+    public BlockPos getChargePad() { return chargePad; }
+    public void setChargePad(BlockPos pad) { this.chargePad = pad; }
     public boolean isDefender() { return defender; }
     public void setDefender(boolean d) { this.defender = d; }
     public String getSwarmGroup() { return swarmGroup; }
@@ -652,6 +1322,11 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
         tag.putBoolean("Defender", defender);
         tag.putString("SwarmGroup", swarmGroup);
         tag.putString("Variant", variant.name());
+        if (chargePad != null) {
+            tag.putInt("ChargePadX", chargePad.getX());
+            tag.putInt("ChargePadY", chargePad.getY());
+            tag.putInt("ChargePadZ", chargePad.getZ());
+        }
         CompoundTag invTag = new CompoundTag();
         for (int i = 0; i < inventory.getContainerSize(); i++) {
             ItemStack stack = inventory.getItem(i);
@@ -666,6 +1341,12 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
         if (!gpsToolStack.isEmpty()) {
             tag.put("GpsTool", gpsToolStack.save(level().registryAccess()));
         }
+        CompoundTag upgradeTag = new CompoundTag();
+        for (int i = 0; i < upgradeSlots.getContainerSize(); i++) {
+            ItemStack stack = upgradeSlots.getItem(i);
+            if (!stack.isEmpty()) upgradeTag.put(String.valueOf(i), stack.save(level().registryAccess()));
+        }
+        tag.put("Upgrades", upgradeTag);
         if (!paint.isEmpty()) tag.put("Paint", paint.save());
     }
 
@@ -675,7 +1356,10 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
         if (tag.contains("OwnerId")) ownerId = tag.getUUID("OwnerId");
         if (tag.contains("DroneId")) droneId = tag.getUUID("DroneId");
         if (tag.contains("LinkedComputer")) linkedComputerId = tag.getUUID("LinkedComputer");
-        if (tag.contains("BluetoothChannel")) bluetoothChannel = tag.getInt("BluetoothChannel");
+        if (tag.contains("BluetoothChannel")) {
+            bluetoothChannel = tag.getInt("BluetoothChannel");
+            getEntityData().set(DATA_CHANNEL, bluetoothChannel);
+        }
         if (tag.contains("FuelTicks")) fuelTicks = tag.getInt("FuelTicks");
         if (tag.contains("Hovering")) hovering = tag.getBoolean("Hovering");
         if (tag.contains("HomeX")) {
@@ -684,6 +1368,9 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
         if (tag.contains("Defender")) defender = tag.getBoolean("Defender");
         if (tag.contains("SwarmGroup")) swarmGroup = tag.getString("SwarmGroup");
         if (tag.contains("Variant")) setVariantByName(tag.getString("Variant"));
+        if (tag.contains("ChargePadX")) {
+            chargePad = new BlockPos(tag.getInt("ChargePadX"), tag.getInt("ChargePadY"), tag.getInt("ChargePadZ"));
+        }
         if (tag.contains("Inventory")) {
             CompoundTag invTag = tag.getCompound("Inventory");
             for (String key : invTag.getAllKeys()) {
@@ -703,6 +1390,17 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
         if (tag.contains("GpsTool")) {
             gpsToolStack = ItemStack.parse(level().registryAccess(), tag.getCompound("GpsTool"))
                     .orElse(ItemStack.EMPTY);
+        }
+        if (tag.contains("Upgrades")) {
+            CompoundTag upgradeTag = tag.getCompound("Upgrades");
+            for (String key : upgradeTag.getAllKeys()) {
+                try {
+                    int slot = Integer.parseInt(key);
+                    upgradeSlots.setItem(slot,
+                            ItemStack.parse(level().registryAccess(), upgradeTag.getCompound(key))
+                                    .orElse(ItemStack.EMPTY));
+                } catch (NumberFormatException ignored) {}
+            }
         }
         if (tag.contains("Paint")) paint = com.apocscode.byteblock.entity.EntityPaint.load(tag.getCompound("Paint"));
     }

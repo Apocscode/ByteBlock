@@ -214,6 +214,60 @@ public class PixelBuffer {
         drawString(regionRight - tw, py, text, fgColor);
     }
 
+    // ── Compact text (8×8 glyphs, vertically reduced from full 8×16 bitmap) ───────
+
+    public static final int SMALL_CHAR_W = 8;
+    public static final int SMALL_CHAR_H = 8;
+    public static final int SMALL_CHAR_ADVANCE = SMALL_CHAR_W; // keep columns crisp: no extra gap
+    private static final int SMALL_SRC_Y0 = 1;
+    private static final int SMALL_SRC_Y1 = 14;
+
+    /** Draw a compact character at 8×8 by preserving source columns and resampling only the active glyph band.
+     *  This avoids horizontal blur and uses vertical resolution on the letterforms instead of empty padding. */
+    public void drawSmallChar(int px, int py, char c, int fgColor) {
+        byte[] glyph = BitmapFont.getGlyph(c);
+        if (glyph == null) return;
+        int srcSpan = SMALL_SRC_Y1 - SMALL_SRC_Y0 + 1;
+        for (int row = 0; row < SMALL_CHAR_H; row++) {
+            int ry = py + row;
+            if (ry < 0 || ry >= height) continue;
+            int sy0 = SMALL_SRC_Y0 + (row * srcSpan) / SMALL_CHAR_H;
+            int sy1 = SMALL_SRC_Y0 + (((row + 1) * srcSpan) / SMALL_CHAR_H) - 1;
+            if (sy1 < sy0) sy1 = sy0;
+            for (int col = 0; col < SMALL_CHAR_W; col++) {
+                int rx = px + col;
+                if (rx < 0 || rx >= width) continue;
+
+                boolean on = false;
+                for (int sy = sy0; sy <= sy1; sy++) {
+                    if (BitmapFont.isPixelSet(glyph, col, sy)) {
+                        on = true;
+                        break;
+                    }
+                }
+                if (on) {
+                    pixels[ry * width + rx] = fgColor;
+                }
+            }
+        }
+    }
+
+    /** Draw a string at compact size. Each character advances by 8 px. */
+    public void drawSmallString(int px, int py, String text, int fgColor) {
+        for (int i = 0; i < text.length(); i++) {
+            drawSmallChar(px + i * SMALL_CHAR_ADVANCE, py, text.charAt(i), fgColor);
+        }
+    }
+
+    public void drawSmallStringRight(int regionRight, int py, String text, int fgColor) {
+        drawSmallString(regionRight - text.length() * SMALL_CHAR_ADVANCE, py, text, fgColor);
+    }
+
+    public void drawSmallStringCentered(int regionX, int regionW, int py, String text, int fgColor) {
+        int tw = text.length() * SMALL_CHAR_ADVANCE;
+        drawSmallString(regionX + (regionW - tw) / 2, py, text, fgColor);
+    }
+
     // ── Text-mode cursor API (terminal compatibility) ───────
 
     public void setTextColor(int paletteIdx) {

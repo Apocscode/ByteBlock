@@ -2,6 +2,7 @@ package com.apocscode.byteblock;
 
 import org.slf4j.Logger;
 
+import com.apocscode.byteblock.compat.Ae2CapabilityRegistrar;
 import com.apocscode.byteblock.compat.ProjectRedBundledCompat;
 import com.apocscode.byteblock.entity.DroneEntity;
 import com.apocscode.byteblock.entity.RobotEntity;
@@ -80,6 +81,11 @@ public class ByteBlock {
             com.apocscode.byteblock.network.WriteToDiskPayload::handle
         );
         registrar.playToServer(
+            com.apocscode.byteblock.network.SaveMeDashboardSettingsPayload.TYPE,
+            com.apocscode.byteblock.network.SaveMeDashboardSettingsPayload.STREAM_CODEC,
+            com.apocscode.byteblock.network.SaveMeDashboardSettingsPayload::handle
+        );
+        registrar.playToServer(
             com.apocscode.byteblock.network.ButtonConfigPayload.TYPE,
             com.apocscode.byteblock.network.ButtonConfigPayload.STREAM_CODEC,
             com.apocscode.byteblock.network.ButtonConfigPayload::handle
@@ -144,6 +150,26 @@ public class ByteBlock {
             com.apocscode.byteblock.network.PaintByteChestPayload.STREAM_CODEC,
             com.apocscode.byteblock.network.PaintByteChestPayload::handle
         );
+        registrar.playToServer(
+            com.apocscode.byteblock.network.PackUpEntityPayload.TYPE,
+            com.apocscode.byteblock.network.PackUpEntityPayload.STREAM_CODEC,
+            com.apocscode.byteblock.network.PackUpEntityPayload::handle
+        );
+        registrar.playToServer(
+            com.apocscode.byteblock.network.SetChargePadPayload.TYPE,
+            com.apocscode.byteblock.network.SetChargePadPayload.STREAM_CODEC,
+            com.apocscode.byteblock.network.SetChargePadPayload::handle
+        );
+        registrar.playToServer(
+            com.apocscode.byteblock.network.SetDroneHomePayload.TYPE,
+            com.apocscode.byteblock.network.SetDroneHomePayload.STREAM_CODEC,
+            com.apocscode.byteblock.network.SetDroneHomePayload::handle
+        );
+        registrar.playToServer(
+            com.apocscode.byteblock.network.SetEntityChannelPayload.TYPE,
+            com.apocscode.byteblock.network.SetEntityChannelPayload.STREAM_CODEC,
+            com.apocscode.byteblock.network.SetEntityChannelPayload::handle
+        );
     }
     private void registerEntityAttributes(EntityAttributeCreationEvent event) {
         event.put(ModEntities.DRONE.get(), DroneEntity.createAttributes().build());
@@ -169,6 +195,10 @@ public class ByteBlock {
                 com.apocscode.byteblock.init.ModBlockEntities.CHARGING_STATION.get(),
                 (be, direction) -> be.getEnergyStorage()
         );
+        // AE2 cable visual connections — only registered when AE2 is present.
+        if (net.neoforged.fml.ModList.get().isLoaded("ae2")) {
+            Ae2CapabilityRegistrar.register(event);
+        }
     }
 
     @SubscribeEvent

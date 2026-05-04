@@ -19,7 +19,8 @@ public class ModBlocks {
                     .mapColor(MapColor.COLOR_GRAY)
                     .strength(2.0f)
                     .sound(SoundType.METAL)
-                    .requiresCorrectToolForDrops()));
+                    .requiresCorrectToolForDrops()
+                    .noOcclusion()));
 
     // Universal Peripheral — connects to adjacent blocks and exposes their API
     public static final DeferredBlock<PeripheralBlock> PERIPHERAL = BLOCKS.register("peripheral",

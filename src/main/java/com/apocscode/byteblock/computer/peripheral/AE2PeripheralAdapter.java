@@ -112,6 +112,13 @@ public class AE2PeripheralAdapter implements IPeripheralAdapter {
     // ── ICraftingSubmitResult ─────────────────────────────────────────────
     private static Method   mSubmitSuccessful;    // ICraftingSubmitResult.successful()
 
+    // ── Item extraction (extract items to an external inventory) ──────────
+    private static Class<?> clsActionable;        // appeng.api.networking.action.Actionable
+    private static Object   actionableSimulate;   // Actionable.SIMULATE
+    private static Object   actionableModulate;   // Actionable.MODULATE
+    private static Method   mMEStorageExtract;    // MEStorage.extract(AEKey, long, Actionable, IActionSource)
+    private static Method   mAEItemKeyToStack;    // AEItemKey.toStack(int) → ItemStack
+
     // ══════════════════════════════════════════════════════════════════════
     // IPeripheralAdapter
     // ══════════════════════════════════════════════════════════════════════
@@ -139,17 +146,14 @@ public class AE2PeripheralAdapter implements IPeripheralAdapter {
                 try {
                     Object grid    = getGrid(be);
                     if (grid == null) return result;
-                    Object svc     = mGetStorageService.invoke(grid);
-                    Object storage = mGetInventory.invoke(svc);
-                    Object stacks  = mGetAvailableStacks.invoke(storage);
-                    if (!(stacks instanceof Map<?, ?> map)) return result;
+                    Map<Object, Long> stacks = getStacksMap(grid);
                     Object craftSvc = safeGetService(grid, mGetCraftingService);
                     int i = 1;
-                    for (Map.Entry<?, ?> e : map.entrySet()) {
+                    for (Map.Entry<Object, Long> e : stacks.entrySet()) {
                         if (!clsAEItemKey.isInstance(e.getKey())) continue;
                         Item item = (Item) mAEItemGetItem.invoke(e.getKey());
                         if (item == null) continue;
-                        long count = ((Number) e.getValue()).longValue();
+                        long count = e.getValue();
                         LuaTable entry = new LuaTable();
                         entry.set("name",        LuaValue.valueOf(
                                 BuiltInRegistries.ITEM.getKey(item).toString()));
@@ -172,17 +176,14 @@ public class AE2PeripheralAdapter implements IPeripheralAdapter {
                 try {
                     Object grid    = getGrid(be);
                     if (grid == null) return result;
-                    Object svc     = mGetStorageService.invoke(grid);
-                    Object storage = mGetInventory.invoke(svc);
-                    Object stacks  = mGetAvailableStacks.invoke(storage);
-                    if (!(stacks instanceof Map<?, ?> map)) return result;
+                    Map<Object, Long> stacks = getStacksMap(grid);
                     int i = 1;
-                    for (Map.Entry<?, ?> e : map.entrySet()) {
+                    for (Map.Entry<Object, Long> e : stacks.entrySet()) {
                         if (!clsAEFluidKey.isInstance(e.getKey())) continue;
                         net.minecraft.world.level.material.Fluid fluid =
                             (net.minecraft.world.level.material.Fluid) mAEFluidGetFluid.invoke(e.getKey());
                         if (fluid == null) continue;
-                        long amount = ((Number) e.getValue()).longValue();
+                        long amount = e.getValue();
                         LuaTable entry = new LuaTable();
                         entry.set("name",   LuaValue.valueOf(
                                 BuiltInRegistries.FLUID.getKey(fluid).toString()));
@@ -203,16 +204,13 @@ public class AE2PeripheralAdapter implements IPeripheralAdapter {
                     if (item == null) return LuaValue.NIL;
                     Object grid    = getGrid(be);
                     if (grid == null) return LuaValue.NIL;
-                    Object svc     = mGetStorageService.invoke(grid);
-                    Object storage = mGetInventory.invoke(svc);
-                    Object stacks  = mGetAvailableStacks.invoke(storage);
+                    Map<Object, Long> stacks = getStacksMap(grid);
                     Object craftSvc = safeGetService(grid, mGetCraftingService);
-                    if (!(stacks instanceof Map<?, ?> map)) return LuaValue.NIL;
-                    for (Map.Entry<?, ?> e : map.entrySet()) {
+                    for (Map.Entry<Object, Long> e : stacks.entrySet()) {
                         if (!clsAEItemKey.isInstance(e.getKey())) continue;
                         Item found = (Item) mAEItemGetItem.invoke(e.getKey());
                         if (!item.equals(found)) continue;
-                        long count = ((Number) e.getValue()).longValue();
+                        long count = e.getValue();
                         LuaTable entry = new LuaTable();
                         entry.set("name",        LuaValue.valueOf(name));
                         entry.set("count",       LuaValue.valueOf(count));
@@ -245,13 +243,11 @@ public class AE2PeripheralAdapter implements IPeripheralAdapter {
                     if (item == null) return LuaValue.valueOf(0);
                     Object grid    = getGrid(be);
                     if (grid == null) return LuaValue.valueOf(0);
-                    Object stacks  = mGetAvailableStacks.invoke(
-                            mGetInventory.invoke(mGetStorageService.invoke(grid)));
-                    if (!(stacks instanceof Map<?, ?> map)) return LuaValue.valueOf(0);
-                    for (Map.Entry<?, ?> e : map.entrySet()) {
+                    Map<Object, Long> stacks = getStacksMap(grid);
+                    for (Map.Entry<Object, Long> e : stacks.entrySet()) {
                         if (!clsAEItemKey.isInstance(e.getKey())) continue;
                         if (item.equals(mAEItemGetItem.invoke(e.getKey())))
-                            return LuaValue.valueOf(((Number) e.getValue()).longValue());
+                            return LuaValue.valueOf(e.getValue());
                     }
                 } catch (Exception ignored) {}
                 return LuaValue.valueOf(0);
@@ -269,15 +265,13 @@ public class AE2PeripheralAdapter implements IPeripheralAdapter {
                     if (fluid == null) return LuaValue.valueOf(0);
                     Object grid   = getGrid(be);
                     if (grid == null) return LuaValue.valueOf(0);
-                    Object stacks = mGetAvailableStacks.invoke(
-                            mGetInventory.invoke(mGetStorageService.invoke(grid)));
-                    if (!(stacks instanceof Map<?, ?> map)) return LuaValue.valueOf(0);
-                    for (Map.Entry<?, ?> e : map.entrySet()) {
+                    Map<Object, Long> stacks = getStacksMap(grid);
+                    for (Map.Entry<Object, Long> e : stacks.entrySet()) {
                         if (!clsAEFluidKey.isInstance(e.getKey())) continue;
                         net.minecraft.world.level.material.Fluid found =
                                 (net.minecraft.world.level.material.Fluid) mAEFluidGetFluid.invoke(e.getKey());
                         if (fluid.equals(found))
-                            return LuaValue.valueOf(((Number) e.getValue()).longValue());
+                            return LuaValue.valueOf(e.getValue());
                     }
                 } catch (Exception ignored) {}
                 return LuaValue.valueOf(0);
@@ -625,12 +619,11 @@ public class AE2PeripheralAdapter implements IPeripheralAdapter {
                         info.set("nodes", LuaValue.valueOf((int) mGridSize.invoke(grid)));
 
                     // Storage summary
-                    Object stacks = mGetAvailableStacks.invoke(
-                            mGetInventory.invoke(mGetStorageService.invoke(grid)));
-                    if (stacks instanceof Map<?, ?> map) {
+                    {
+                        Map<Object, Long> stacks = getStacksMap(grid);
                         long totalItems = 0; int itemTypes = 0; int fluidTypes = 0;
-                        for (Map.Entry<?, ?> e : map.entrySet()) {
-                            long count = ((Number) e.getValue()).longValue();
+                        for (Map.Entry<Object, Long> e : stacks.entrySet()) {
+                            long count = e.getValue();
                             if (clsAEItemKey.isInstance(e.getKey())) { totalItems += count; itemTypes++; }
                             else if (clsAEFluidKey.isInstance(e.getKey())) { fluidTypes++; }
                         }
@@ -689,6 +682,40 @@ public class AE2PeripheralAdapter implements IPeripheralAdapter {
             } catch (Exception ignored) {}
         }
         return null;
+    }
+
+    /**
+     * Fetches all stacks from the ME network as a flat {@code Map<AEKey, Long>}.
+     * Handles both the legacy {@code Map}-based API and the modern
+     * {@code KeyCounter} (Iterable) used by AE2 19.x on 1.21.
+     */
+    private static Map<Object, Long> getStacksMap(Object grid) {
+        Map<Object, Long> out = new LinkedHashMap<>();
+        try {
+            Object svc     = mGetStorageService.invoke(grid);
+            Object storage = mGetInventory.invoke(svc);
+            Object stacks  = mGetAvailableStacks.invoke(storage);
+            if (stacks instanceof Map<?, ?> map) {
+                for (Map.Entry<?, ?> e : map.entrySet()) {
+                    if (e.getKey() != null && e.getValue() instanceof Number n)
+                        out.put(e.getKey(), n.longValue());
+                }
+            } else if (stacks instanceof Iterable<?> iterable) {
+                // KeyCounter implements Iterable<Object2LongMap$Entry<AEKey>>.
+                // Object2LongMap$Entry extends Map.Entry<K,Long> — cast directly,
+                // no per-entry reflection needed (avoids IllegalAccessException on
+                // private fastutil inner classes).
+                for (Object entry : iterable) {
+                    if (entry instanceof Map.Entry<?, ?> me) {
+                        Object key = me.getKey();
+                        Object val = me.getValue();
+                        if (key != null && val instanceof Number n)
+                            out.put(key, n.longValue());
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return out;
     }
 
     /** Get an optional service from the grid; returns null if unavailable. */
@@ -838,6 +865,24 @@ public class AE2PeripheralAdapter implements IPeripheralAdapter {
                 mIsNetworkPowered      = safeMethod(clsEnergySvc, "isNetworkPowered");
             }
 
+            // ── Item extraction ────────────────────────────────────────────
+            clsActionable = safeClass("appeng.api.networking.action.Actionable");
+            if (clsActionable != null) {
+                try {
+                    Object[] vals = (Object[]) clsActionable.getMethod("values").invoke(null);
+                    for (Object v : vals) {
+                        String s = v.toString();
+                        if ("SIMULATE".equals(s)) actionableSimulate = v;
+                        if ("MODULATE".equals(s)) actionableModulate = v;
+                    }
+                } catch (Exception ignored) {}
+                if (clsActionSource != null && clsMEStorage != null && clsAEKey != null) {
+                    mMEStorageExtract = safeMethod(clsMEStorage, "extract",
+                            clsAEKey, long.class, clsActionable, clsActionSource);
+                }
+            }
+            mAEItemKeyToStack = safeMethod(clsAEItemKey, "toStack", int.class);
+
             return true;
         } catch (Exception e) {
             clsGridNodeHost = null;
@@ -913,14 +958,13 @@ public class AE2PeripheralAdapter implements IPeripheralAdapter {
         try {
             Object grid    = getGrid(be);
             if (grid == null) return list;
-            Object stacks  = mGetAvailableStacks.invoke(mGetInventory.invoke(mGetStorageService.invoke(grid)));
-            if (!(stacks instanceof Map<?, ?> map)) return list;
+            Map<Object, Long> stacks = getStacksMap(grid);
             Object craftSvc = safeGetService(grid, mGetCraftingService);
-            for (Map.Entry<?, ?> e : map.entrySet()) {
+            for (Map.Entry<Object, Long> e : stacks.entrySet()) {
                 if (!clsAEItemKey.isInstance(e.getKey())) continue;
                 Item item = (Item) mAEItemGetItem.invoke(e.getKey());
                 if (item == null) continue;
-                long count = ((Number) e.getValue()).longValue();
+                long count = e.getValue();
                 String name        = BuiltInRegistries.ITEM.getKey(item).toString();
                 String displayName = new ItemStack(item).getHoverName().getString();
                 boolean craftable  = isCraftableKey(craftSvc, e.getKey());
@@ -937,14 +981,13 @@ public class AE2PeripheralAdapter implements IPeripheralAdapter {
         try {
             Object grid   = getGrid(be);
             if (grid == null) return list;
-            Object stacks = mGetAvailableStacks.invoke(mGetInventory.invoke(mGetStorageService.invoke(grid)));
-            if (!(stacks instanceof Map<?, ?> map)) return list;
-            for (Map.Entry<?, ?> e : map.entrySet()) {
+            Map<Object, Long> stacks = getStacksMap(grid);
+            for (Map.Entry<Object, Long> e : stacks.entrySet()) {
                 if (!clsAEFluidKey.isInstance(e.getKey())) continue;
                 net.minecraft.world.level.material.Fluid fluid =
                     (net.minecraft.world.level.material.Fluid) mAEFluidGetFluid.invoke(e.getKey());
                 if (fluid == null) continue;
-                long droplets = ((Number) e.getValue()).longValue();
+                long droplets = e.getValue();
                 String name = BuiltInRegistries.FLUID.getKey(fluid).toString();
                 list.add(new AEFluidEntry(name, droplets / 81));  // 81 droplets per mB
             }
@@ -1013,5 +1056,111 @@ public class AE2PeripheralAdapter implements IPeripheralAdapter {
             if (grid == null) return 0;
             return ((Number) mGridSize.invoke(grid)).intValue();
         } catch (Exception e) { return 0; }
+    }
+
+    // ── Item extraction ───────────────────────────────────────────────────
+
+    /**
+     * Extracts up to {@code requestCount} items of {@code itemName} from the
+     * ME network attached to {@code meNode} and deposits them into {@code inv}.
+     * Returns the actual count transferred (0 on failure).
+     *
+     * <p>A simulation pass checks availability first; only the amount that
+     * actually fits in the inventory is extracted, so no items are ever lost.</p>
+     */
+    public static int extractToInventoryJava(BlockEntity meNode, String itemName, int requestCount,
+            net.minecraft.world.Container inv) {
+        if (!ensureCache() || meNode == null) return 0;
+        if (mMEStorageExtract == null || actionableModulate == null || clsActionSource == null) return 0;
+        try {
+            Item item = lookupItem(itemName);
+            if (item == null) return 0;
+            Object aeKey = itemToAEKey(item);
+            if (aeKey == null) return 0;
+            Object grid = getGrid(meNode);
+            if (grid == null) return 0;
+            Object storage = mGetInventory.invoke(mGetStorageService.invoke(grid));
+
+            // Anonymous machine IActionSource
+            Object src = Proxy.newProxyInstance(
+                    clsActionSource.getClassLoader(), new Class[]{clsActionSource},
+                    (proxy, method, args) -> {
+                        String n = method.getName();
+                        if ("player".equals(n) || "machine".equals(n)) return Optional.empty();
+                        return null;
+                    });
+
+            // Simulate: check how much AE2 can provide
+            long available = (actionableSimulate != null)
+                    ? (long) mMEStorageExtract.invoke(storage, aeKey, (long) requestCount, actionableSimulate, src)
+                    : (long) requestCount;
+            if (available <= 0) return 0;
+
+            // How much will actually fit in the target inventory?
+            long space = inventoryFreeSpaceJava(inv, item);
+            long toExtract = Math.min(available, Math.min((long) requestCount, space));
+            if (toExtract <= 0) return 0;
+
+            // Actually extract from ME network
+            long extracted = (long) mMEStorageExtract.invoke(storage, aeKey, toExtract, actionableModulate, src);
+            if (extracted <= 0) return 0;
+
+            // Build template stack (use AEItemKey.toStack to preserve data components if possible)
+            ItemStack template;
+            try {
+                template = (mAEItemKeyToStack != null)
+                        ? (ItemStack) mAEItemKeyToStack.invoke(aeKey, 1)
+                        : new ItemStack(item, 1);
+            } catch (Exception ignored) {
+                template = new ItemStack(item, 1);
+            }
+            return insertIntoInventoryJava(inv, template, extracted);
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /** Returns how many of {@code item} can still be inserted into {@code inv}. */
+    public static long inventoryFreeSpaceJava(net.minecraft.world.Container inv, Item item) {
+        long space = 0;
+        for (int slot = 0; slot < inv.getContainerSize(); slot++) {
+            ItemStack s = inv.getItem(slot);
+            if (s.isEmpty()) {
+                space += item.getDefaultMaxStackSize();
+            } else if (s.is(item)) {
+                space += Math.max(0L, (long) s.getMaxStackSize() - s.getCount());
+            }
+        }
+        return space;
+    }
+
+    private static int insertIntoInventoryJava(net.minecraft.world.Container inv, ItemStack template, long count) {
+        int transferred = 0;
+        long remaining = count;
+        // Pass 1: top-up partial stacks
+        for (int slot = 0; slot < inv.getContainerSize() && remaining > 0; slot++) {
+            ItemStack s = inv.getItem(slot);
+            if (!s.isEmpty() && s.is(template.getItem())) {
+                int canAdd = s.getMaxStackSize() - s.getCount();
+                if (canAdd > 0) {
+                    int add = (int) Math.min(canAdd, remaining);
+                    s.grow(add);
+                    remaining -= add;
+                    transferred += add;
+                    inv.setChanged();
+                }
+            }
+        }
+        // Pass 2: fill empty slots
+        for (int slot = 0; slot < inv.getContainerSize() && remaining > 0; slot++) {
+            if (inv.getItem(slot).isEmpty()) {
+                int place = (int) Math.min(remaining, template.getMaxStackSize());
+                inv.setItem(slot, template.copyWithCount(place));
+                remaining -= place;
+                transferred += place;
+                inv.setChanged();
+            }
+        }
+        return transferred;
     }
 }

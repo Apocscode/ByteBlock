@@ -8,6 +8,7 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.inventory.ContainerData;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
 import net.neoforged.neoforge.capabilities.Capabilities;
@@ -26,6 +27,26 @@ import net.neoforged.neoforge.capabilities.Capabilities;
 public class RobotMenu extends AbstractContainerMenu {
     public static final int CARGO_SLOTS = 16;
     private final RobotEntity robot;
+    // Synced: [0]=energyStored low bits, [1]=energyStored high bits, [2]=maxEnergy low, [3]=maxEnergy high
+    private final int[] syncCache = new int[4];
+    private final ContainerData energyData = new ContainerData() {
+        @Override public int get(int i) {
+            int e = robot.getEnergyStorage().getEnergyStored();
+            int m = robot.getEnergyStorage().getMaxEnergyStored();
+            return switch (i) {
+                case 0 -> e & 0xFFFF;
+                case 1 -> (e >> 16) & 0xFFFF;
+                case 2 -> m & 0xFFFF;
+                case 3 -> (m >> 16) & 0xFFFF;
+                default -> 0;
+            };
+        }
+        @Override public void set(int i, int v) { if (i >= 0 && i < 4) syncCache[i] = v; }
+        @Override public int getCount() { return 4; }
+    };
+
+    public int getSyncedEnergy() { return (syncCache[1] << 16) | (syncCache[0] & 0xFFFF); }
+    public int getSyncedMaxEnergy() { return Math.max(1, (syncCache[3] << 16) | (syncCache[2] & 0xFFFF)); }
 
     public RobotMenu(int containerId, Inventory playerInv, RobotEntity robot) {
         super(ModMenuTypes.ROBOT.get(), containerId);
@@ -52,17 +73,28 @@ public class RobotMenu extends AbstractContainerMenu {
         addSlot(new EntitySlot(robot::getGpsToolStack, robot::setGpsToolStack,
                 s -> s.isEmpty() || s.getItem() instanceof com.apocscode.byteblock.item.GpsToolItem,
                 8, 54));
+        // Upgrade slots (slots 20..23) — right column
+        for (int i = 0; i < 4; i++) {
+            final int idx = i;
+            addSlot(new EntitySlot(
+                    () -> robot.getUpgradeSlots().getItem(idx),
+                    s  -> robot.getUpgradeSlots().setItem(idx, s),
+                    s  -> s.isEmpty() || s.getItem() instanceof com.apocscode.byteblock.item.UpgradeCard,
+                    152, 18 + i * 18));
+        }
 
-        // Player inventory rows (slots 20..46)
+        // Player inventory rows (slots 24..50)
         for (int row = 0; row < 3; row++) {
             for (int col = 0; col < 9; col++) {
                 addSlot(new Slot(playerInv, col + row * 9 + 9, 8 + col * 18, 104 + row * 18));
             }
         }
-        // Hotbar (slots 47..55)
+        // Hotbar (slots 51..59)
         for (int col = 0; col < 9; col++) {
             addSlot(new Slot(playerInv, col, 8 + col * 18, 162));
         }
+
+        addDataSlots(energyData);
     }
 
     public static RobotMenu fromNetwork(int containerId, Inventory playerInv, RegistryFriendlyByteBuf buf) {
@@ -95,14 +127,17 @@ public class RobotMenu extends AbstractContainerMenu {
 
         final int cargoEnd     = CARGO_SLOTS;        // 16
         final int accessoryEnd = cargoEnd + 4;       // 20 (3 tools/battery + 1 gps)
-        final int playerEnd    = accessoryEnd + 36;  // 56
+        final int upgradeEnd   = accessoryEnd + 4;   // 24 (4 upgrade slots)
+        final int playerEnd    = upgradeEnd + 36;    // 60
 
-        if (index < accessoryEnd) {
+        if (index < upgradeEnd) {
             // Robot -> player
-            if (!moveItemStackTo(stack, accessoryEnd, playerEnd, true)) return ItemStack.EMPTY;
+            if (!moveItemStackTo(stack, upgradeEnd, playerEnd, true)) return ItemStack.EMPTY;
         } else {
-            // Player -> robot.  GPS tool first, then battery if FE, then cargo.
-            if (stack.getItem() instanceof com.apocscode.byteblock.item.GpsToolItem
+            // Player -> robot. Upgrade cards first, then GPS, then battery, then cargo.
+            if (stack.getItem() instanceof com.apocscode.byteblock.item.UpgradeCard) {
+                moveItemStackTo(stack, accessoryEnd, upgradeEnd, false);
+            } else if (stack.getItem() instanceof com.apocscode.byteblock.item.GpsToolItem
                     && moveItemStackTo(stack, accessoryEnd - 1, accessoryEnd, false)) {
                 // moved into GPS slot
             } else if (stack.getCapability(Capabilities.EnergyStorage.ITEM) != null

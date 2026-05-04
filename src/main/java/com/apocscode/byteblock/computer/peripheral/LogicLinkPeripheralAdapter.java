@@ -183,13 +183,18 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
 
     @Override
     public LuaTable buildTable(BlockEntity be) {
+        return buildTable(be, null);
+    }
+
+    @Override
+    public LuaTable buildTable(BlockEntity be, com.apocscode.byteblock.computer.JavaOS callingOs) {
         if (!ensureCache()) return new LuaTable();
-        if (clsHubBE      != null && clsHubBE.isInstance(be))      return buildHubTable(be);
-        if (clsSensorBE   != null && clsSensorBE.isInstance(be))   return buildSensorTable(be);
-        if (clsMotorBE    != null && clsMotorBE.isInstance(be))     return buildMotorTable(be);
-        if (clsDriveBE    != null && clsDriveBE.isInstance(be))     return buildDriveTable(be);
-        if (clsRedstoneBE != null && clsRedstoneBE.isInstance(be)) return buildRedstoneTable(be);
-        if (clsTrainCtrlBE != null && clsTrainCtrlBE.isInstance(be)) return buildTrainCtrlTable(be);
+        if (clsHubBE      != null && clsHubBE.isInstance(be))       return buildHubTable(be, callingOs);
+        if (clsSensorBE   != null && clsSensorBE.isInstance(be))    return buildSensorTable(be);
+        if (clsMotorBE    != null && clsMotorBE.isInstance(be))      return buildMotorTable(be);
+        if (clsDriveBE    != null && clsDriveBE.isInstance(be))      return buildDriveTable(be);
+        if (clsRedstoneBE != null && clsRedstoneBE.isInstance(be))  return buildRedstoneTable(be);
+        if (clsTrainCtrlBE != null && clsTrainCtrlBE.isInstance(be)) return buildTrainCtrlTable(be, callingOs);
         return new LuaTable();
     }
 
@@ -197,7 +202,7 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
     // Hub (logiclink) — Logic Link Hub
     // ══════════════════════════════════════════════════════════════════════
 
-    private LuaTable buildHubTable(BlockEntity be) {
+    private LuaTable buildHubTable(BlockEntity be, com.apocscode.byteblock.computer.JavaOS callingOs) {
         LuaTable t = new LuaTable();
 
         // isLinked() → boolean
@@ -337,7 +342,7 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
                     long total = 0;
                     for (Object bis : (List<?>) mGetStacks.invoke(summary))
                         total += (int) fBisCount.get(bis);
-                    return LuaValue.valueOf(total);
+                    return LuaValue.valueOf((double) total);
                 } catch (Exception e) { return LuaValue.valueOf(0); }
             }
         });
@@ -377,25 +382,25 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
         }
         final Object peripheral = peri;
 
-        addResult0(t, "getLinks",    peripheral, mGetLinks);
-        addResult0(t, "getSensors",  peripheral, mGetSensors);
-        addResult0(t, "getDevices",  peripheral, mGetDevices);
-        addResult0(t, "getGauges",   peripheral, mGetGauges);
-        addResult0(t, "getPosition", peripheral, mGetPosition);
+        addResult0Precomputed(t, "getLinks",    peripheral, mGetLinks);
+        addResult0Precomputed(t, "getSensors",  peripheral, mGetSensors);
+        addResult0Precomputed(t, "getDevices",  peripheral, mGetDevices);
+        addResult0Precomputed(t, "getGauges",   peripheral, mGetGauges);
+        addResult0Precomputed(t, "getPosition", peripheral, mGetPosition);
 
-        addResult1S(t, "getRemoteSensorData", peripheral, mGetRemoteSensorData);
-        addResult1S(t, "getRemoteMotorInfo",  peripheral, mGetRemoteMotorInfo);
-        addResult1S(t, "getDeviceLabel",      peripheral, mGetDeviceLabel);
-        addResult1S(t, "cycleTrackSwitch",    peripheral, mCycleTrackSwitch);
-        addResult1S(t, "getTrainBlockData",   peripheral, mGetTrainBlockData);
-        addResult1S(t, "getRemoteRedstoneChannels", peripheral, mGetRemoteRedstoneChannels);
+        addResult1S(t, "getRemoteSensorData",      peripheral, mGetRemoteSensorData,         be);
+        addResult1S(t, "getRemoteMotorInfo",        peripheral, mGetRemoteMotorInfo,          be);
+        addResult1S(t, "getDeviceLabel",            peripheral, mGetDeviceLabel,              be);
+        addResult1S(t, "cycleTrackSwitch",          peripheral, mCycleTrackSwitch,            be);
+        addResult1S(t, "getTrainBlockData",         peripheral, mGetTrainBlockData,           be);
+        addResult1S(t, "getRemoteRedstoneChannels", peripheral, mGetRemoteRedstoneChannels,   be);
 
         // enableRemote(id, bool)
         t.set("enableRemote", new VarArgFunction() {
             @Override public Varargs invoke(Varargs args) {
                 if (peripheral == null || mEnableRemote == null) return LuaValue.NONE;
-                try { mEnableRemote.invoke(peripheral, args.checkjstring(1), args.toboolean(2)); }
-                catch (Exception ignored) {}
+                final String id = args.checkjstring(1); final boolean en = args.toboolean(2);
+                runOnServer(be, () -> { try { mEnableRemote.invoke(peripheral, id, en); } catch (Exception ignored) {} });
                 return LuaValue.NONE;
             }
         });
@@ -404,8 +409,8 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
         t.set("setRemoteSpeed", new VarArgFunction() {
             @Override public Varargs invoke(Varargs args) {
                 if (peripheral == null || mSetRemoteSpeed == null) return LuaValue.NONE;
-                try { mSetRemoteSpeed.invoke(peripheral, args.checkjstring(1), args.checkint(2)); }
-                catch (Exception ignored) {}
+                final String id = args.checkjstring(1); final int spd = args.checkint(2);
+                runOnServer(be, () -> { try { mSetRemoteSpeed.invoke(peripheral, id, spd); } catch (Exception ignored) {} });
                 return LuaValue.NONE;
             }
         });
@@ -414,8 +419,8 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
         t.set("setRemoteModifier", new VarArgFunction() {
             @Override public Varargs invoke(Varargs args) {
                 if (peripheral == null || mSetRemoteModifier == null) return LuaValue.NONE;
-                try { mSetRemoteModifier.invoke(peripheral, args.checkjstring(1), args.checkdouble(2)); }
-                catch (Exception ignored) {}
+                final String id = args.checkjstring(1); final double mod = args.checkdouble(2);
+                runOnServer(be, () -> { try { mSetRemoteModifier.invoke(peripheral, id, mod); } catch (Exception ignored) {} });
                 return LuaValue.NONE;
             }
         });
@@ -424,8 +429,8 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
         t.set("setRemoteReversed", new VarArgFunction() {
             @Override public Varargs invoke(Varargs args) {
                 if (peripheral == null || mSetRemoteReversed == null) return LuaValue.NONE;
-                try { mSetRemoteReversed.invoke(peripheral, args.checkjstring(1), args.toboolean(2)); }
-                catch (Exception ignored) {}
+                final String id = args.checkjstring(1); final boolean rev = args.toboolean(2);
+                runOnServer(be, () -> { try { mSetRemoteReversed.invoke(peripheral, id, rev); } catch (Exception ignored) {} });
                 return LuaValue.NONE;
             }
         });
@@ -434,8 +439,8 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
         t.set("setDeviceLabel", new VarArgFunction() {
             @Override public Varargs invoke(Varargs args) {
                 if (peripheral == null || mSetDeviceLabel == null) return LuaValue.NONE;
-                try { mSetDeviceLabel.invoke(peripheral, args.checkjstring(1), args.checkjstring(2)); }
-                catch (Exception ignored) {}
+                final String id = args.checkjstring(1); final String lbl = args.checkjstring(2);
+                runOnServer(be, () -> { try { mSetDeviceLabel.invoke(peripheral, id, lbl); } catch (Exception ignored) {} });
                 return LuaValue.NONE;
             }
         });
@@ -444,17 +449,18 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
         t.set("setAllRemoteRedstoneOutputs", new VarArgFunction() {
             @Override public Varargs invoke(Varargs args) {
                 if (peripheral == null || mSetAllRemoteRedstoneOutputs == null) return LuaValue.NONE;
-                try { mSetAllRemoteRedstoneOutputs.invoke(peripheral, args.checkjstring(1), args.checkint(2)); }
-                catch (Exception ignored) {}
+                final String id = args.checkjstring(1); final int pwr = args.checkint(2);
+                runOnServer(be, () -> { try { mSetAllRemoteRedstoneOutputs.invoke(peripheral, id, pwr); } catch (Exception ignored) {} });
                 return LuaValue.NONE;
             }
         });
 
-        // getRemoteRedstoneInput(id, item1, item2) → int
+        // getRemoteRedstoneInput(id, item1, item2) → int (server-thread only — peripheral does Level access)
         t.set("getRemoteRedstoneInput", new VarArgFunction() {
             @Override public Varargs invoke(Varargs args) {
                 if (peripheral == null || mGetRemoteRedstoneInput == null)
                     return LuaValue.valueOf(0);
+                if (!isServerThread(be)) return LuaValue.valueOf(0);
                 try {
                     Object r = mGetRemoteRedstoneInput.invoke(peripheral,
                             args.checkjstring(1), args.checkjstring(2), args.checkjstring(3));
@@ -467,34 +473,32 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
         t.set("setRemoteRedstoneOutput", new VarArgFunction() {
             @Override public Varargs invoke(Varargs args) {
                 if (peripheral == null || mSetRemoteRedstoneOutput == null) return LuaValue.NONE;
-                try {
-                    mSetRemoteRedstoneOutput.invoke(peripheral,
-                            args.checkjstring(1), args.checkjstring(2),
-                            args.checkjstring(3), args.checkint(4));
-                } catch (Exception ignored) {}
+                final String id = args.checkjstring(1), s1 = args.checkjstring(2), s2 = args.checkjstring(3);
+                final int pwr = args.checkint(4);
+                runOnServer(be, () -> { try { mSetRemoteRedstoneOutput.invoke(peripheral, id, s1, s2, pwr); } catch (Exception ignored) {} });
                 return LuaValue.NONE;
             }
         });
 
-        // requestItem(itemName, count, address) → boolean
+        // requestItem(itemName, count, address) — fire-and-forget to server thread
         t.set("requestItem", new VarArgFunction() {
             @Override public Varargs invoke(Varargs args) {
                 if (peripheral == null || mRequestItem == null) return LuaValue.FALSE;
-                try {
-                    Object r = mRequestItem.invoke(peripheral,
-                            args.checkjstring(1), args.checkint(2), args.checkjstring(3));
-                    return javaToLua(r);
-                } catch (Exception e) { return LuaValue.FALSE; }
+                final String name = args.checkjstring(1);
+                final int    cnt  = args.checkint(2);
+                final String addr = args.checkjstring(3);
+                runOnServer(be, () -> { try { mRequestItem.invoke(peripheral, name, cnt, addr); } catch (Exception ignored) {} });
+                return LuaValue.TRUE;
             }
         });
 
-        // requestItems(items, address) → boolean — bulk request
+        // requestItems(items, address) → boolean — bulk request (fire-and-forget)
         t.set("requestItems", new VarArgFunction() {
             @Override public Varargs invoke(Varargs args) {
                 if (peripheral == null || mRequestItems == null) return LuaValue.FALSE;
                 try {
                     LuaTable itemsTbl = args.checktable(1);
-                    String address = args.checkjstring(2);
+                    final String address = args.checkjstring(2);
                     java.util.Map<Object, Object> javaItems = new java.util.HashMap<>();
                     LuaValue k = LuaValue.NIL;
                     while (true) {
@@ -505,32 +509,36 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
                         if (v.istable()) {
                             LuaTable entry = v.checktable();
                             java.util.Map<String, Object> javaEntry = new java.util.HashMap<>();
-                            LuaValue name  = entry.get("name");
-                            LuaValue count = entry.get("count");
-                            if (!name.isnil())  javaEntry.put("name",  name.tojstring());
-                            if (!count.isnil()) javaEntry.put("count", count.toint());
+                            LuaValue nm  = entry.get("name");
+                            LuaValue cnt = entry.get("count");
+                            if (!nm.isnil())  javaEntry.put("name",  nm.tojstring());
+                            if (!cnt.isnil()) javaEntry.put("count", cnt.toint());
                             javaItems.put(k.isint() ? Integer.valueOf(k.toint()) : k.tojstring(), javaEntry);
                         }
                     }
-                    Object r = mRequestItems.invoke(peripheral, javaItems, address);
-                    return javaToLua(r);
+                    final java.util.Map<Object, Object> finalItems = javaItems;
+                    runOnServer(be, () -> { try { mRequestItems.invoke(peripheral, finalItems, address); } catch (Exception ignored) {} });
                 } catch (Exception e) { return LuaValue.FALSE; }
+                return LuaValue.TRUE;
             }
         });
 
-        // getAllRemoteSensorData() → list of sensor data
-        t.set("getAllRemoteSensorData", new ZeroArgFunction() {
-            @Override public LuaValue call() {
-                if (peripheral == null || mGetAllRemoteSensorData == null) return new LuaTable();
-                try { return javaToLua(mGetAllRemoteSensorData.invoke(peripheral)); }
-                catch (Exception e) { return new LuaTable(); }
-            }
-        });
+        // getAllRemoteSensorData() — pre-computed at table-build time (server thread only)
+        {
+            LuaValue pre = new LuaTable();
+            if (peripheral != null && mGetAllRemoteSensorData != null)
+                try { pre = javaToLua(mGetAllRemoteSensorData.invoke(peripheral)); } catch (Exception ignored) {}
+            final LuaValue cachedSensorData = pre;
+            t.set("getAllRemoteSensorData", new ZeroArgFunction() {
+                @Override public LuaValue call() { return cachedSensorData; }
+            });
+        }
 
-        // getTrackSwitchState(sensorId) → table
+        // getTrackSwitchState(sensorId) → table (server-thread only — peripheral does Level access)
         t.set("getTrackSwitchState", new OneArgFunction() {
             @Override public LuaValue call(LuaValue arg) {
                 if (peripheral == null || mGetTrackSwitchState == null) return LuaValue.NIL;
+                if (!isServerThread(be)) return LuaValue.NIL;
                 try { return javaToLua(mGetTrackSwitchState.invoke(peripheral, arg.checkjstring())); }
                 catch (Exception e) { return LuaValue.NIL; }
             }
@@ -991,7 +999,7 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
     // Train Controller (reflective proxy of TrainControllerPeripheral)
     // ══════════════════════════════════════════════════════════════════════
 
-    private LuaTable buildTrainCtrlTable(BlockEntity be) {
+    private LuaTable buildTrainCtrlTable(BlockEntity be, com.apocscode.byteblock.computer.JavaOS callingOs) {
         LuaTable t = new LuaTable();
         Object peri = null;
         if (ctorTrainCtrl != null) {
@@ -999,33 +1007,38 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
         }
         final Object peripheral = peri;
 
-        addResult0(t, "getTrains",          peripheral, mTcGetTrains);
-        addResult0(t, "getStations",        peripheral, mTcGetStations);
-        addResult0(t, "getSignals",         peripheral, mTcGetSignals);
-        addResult0(t, "getObservers",       peripheral, mTcGetObservers);
-        addResult0(t, "getNetworkOverview", peripheral, mTcGetNetworkOverview);
-        addResult1S(t, "getTrain",          peripheral, mTcGetTrain);
+        addResult0Precomputed(t, "getTrains",          peripheral, mTcGetTrains);
+        addResult0Precomputed(t, "getStations",        peripheral, mTcGetStations);
+        addResult0Precomputed(t, "getSignals",         peripheral, mTcGetSignals);
+        addResult0Precomputed(t, "getObservers",       peripheral, mTcGetObservers);
+        addResult0Precomputed(t, "getNetworkOverview", peripheral, mTcGetNetworkOverview);
+        addResult1S(t, "getTrain",                     peripheral, mTcGetTrain, be);
 
-        t.set("getTrainCount", new ZeroArgFunction() {
-            @Override public LuaValue call() {
-                if (peripheral == null || mTcGetTrainCount == null) return LuaValue.valueOf(0);
-                try { return LuaValue.valueOf((int) mTcGetTrainCount.invoke(peripheral)); }
-                catch (Exception e) { return LuaValue.valueOf(0); }
-            }
-        });
-
-        t.set("getRefreshInterval", new ZeroArgFunction() {
-            @Override public LuaValue call() {
-                if (peripheral == null || mTcGetRefreshInterval == null) return LuaValue.valueOf(20);
-                try { return LuaValue.valueOf((int) mTcGetRefreshInterval.invoke(peripheral)); }
-                catch (Exception e) { return LuaValue.valueOf(20); }
-            }
-        });
+        // getTrainCount, getRefreshInterval — pre-computed at table-build time
+        {
+            LuaValue preTc = LuaValue.valueOf(0);
+            if (peripheral != null && mTcGetTrainCount != null)
+                try { preTc = LuaValue.valueOf((int) mTcGetTrainCount.invoke(peripheral)); } catch (Exception ignored) {}
+            final LuaValue cachedTrainCount = preTc;
+            t.set("getTrainCount", new ZeroArgFunction() {
+                @Override public LuaValue call() { return cachedTrainCount; }
+            });
+        }
+        {
+            LuaValue preRi = LuaValue.valueOf(20);
+            if (peripheral != null && mTcGetRefreshInterval != null)
+                try { preRi = LuaValue.valueOf((int) mTcGetRefreshInterval.invoke(peripheral)); } catch (Exception ignored) {}
+            final LuaValue cachedRefreshInterval = preRi;
+            t.set("getRefreshInterval", new ZeroArgFunction() {
+                @Override public LuaValue call() { return cachedRefreshInterval; }
+            });
+        }
 
         t.set("setRefreshInterval", new OneArgFunction() {
             @Override public LuaValue call(LuaValue n) {
                 if (peripheral != null && mTcSetRefreshInterval != null) {
-                    try { mTcSetRefreshInterval.invoke(peripheral, n.checkint()); } catch (Exception ignored) {}
+                    final int val = n.checkint();
+                    runOnServer(be, () -> { try { mTcSetRefreshInterval.invoke(peripheral, val); } catch (Exception ignored) {} });
                 }
                 return LuaValue.NONE;
             }
@@ -1034,7 +1047,7 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
         t.set("refresh", new ZeroArgFunction() {
             @Override public LuaValue call() {
                 if (peripheral != null && mTcRefresh != null) {
-                    try { mTcRefresh.invoke(peripheral); } catch (Exception ignored) {}
+                    runOnServer(be, () -> { try { mTcRefresh.invoke(peripheral); } catch (Exception ignored) {} });
                 }
                 return LuaValue.NONE;
             }
@@ -1148,123 +1161,142 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
 
     private static boolean ensureCache() {
         if (cacheReady) return clsHubBE != null;
-        cacheReady = true;
-        try {
-            // ── BE classes ─────────────────────────────────────────────────
-            clsHubBE      = Class.forName("com.apocscode.logiclink.block.LogicLinkBlockEntity");
-            clsSensorBE   = safeClass("com.apocscode.logiclink.block.LogicSensorBlockEntity");
-            clsMotorBE    = safeClass("com.apocscode.logiclink.block.CreativeLogicMotorBlockEntity");
-            clsDriveBE    = safeClass("com.apocscode.logiclink.block.LogicDriveBlockEntity");
-            clsRedstoneBE = safeClass("com.apocscode.logiclink.block.RedstoneControllerBlockEntity");
+        synchronized (LogicLinkPeripheralAdapter.class) {
+            if (cacheReady) return clsHubBE != null;
+            org.slf4j.Logger log = com.apocscode.byteblock.ByteBlock.LOGGER;
+
+            // ── Mandatory: Hub BE class. If this fails, LogicLink isn't on the
+            //    classpath and we cannot adapt anything. Everything else is optional.
+            try {
+                clsHubBE = Class.forName("com.apocscode.logiclink.block.LogicLinkBlockEntity");
+                log.info("[LogicLinkAdapter] Loaded Hub BE class OK");
+            } catch (Throwable t) {
+                log.warn("[LogicLinkAdapter] Hub BE class missing — LogicLink not loaded? {}", t.toString());
+                clsHubBE = null;
+                cacheReady = true;
+                return false;
+            }
+
+            // ── Optional BE classes ────────────────────────────────────────
+            clsSensorBE    = safeClass("com.apocscode.logiclink.block.LogicSensorBlockEntity");
+            clsMotorBE     = safeClass("com.apocscode.logiclink.block.CreativeLogicMotorBlockEntity");
+            clsDriveBE     = safeClass("com.apocscode.logiclink.block.LogicDriveBlockEntity");
+            clsRedstoneBE  = safeClass("com.apocscode.logiclink.block.RedstoneControllerBlockEntity");
             clsTrainCtrlBE = safeClass("com.apocscode.logiclink.block.TrainControllerBlockEntity");
 
-            // ── Hub BE (direct) ────────────────────────────────────────────
-            mIsLinked            = clsHubBE.getMethod("isLinked");
-            mGetNetworkSummary   = clsHubBE.getMethod("getNetworkSummary");
-            mGetNetworkFrequency = clsHubBE.getMethod("getNetworkFrequency");
-            mGetHubRange         = clsHubBE.getMethod("getHubRange");
-            mSetHubRange         = clsHubBE.getMethod("setHubRange", int.class);
-            mGetHubLabel         = clsHubBE.getMethod("getHubLabel");
-            mSetHubLabel         = clsHubBE.getMethod("setHubLabel", String.class);
+            // ── Hub BE direct methods (all individually safe) ──────────────
+            mIsLinked              = safeMethod(clsHubBE, "isLinked");
+            mGetNetworkSummary     = safeMethod(clsHubBE, "getNetworkSummary");
+            mGetNetworkFrequency   = safeMethod(clsHubBE, "getNetworkFrequency");
+            mGetHubRange           = safeMethod(clsHubBE, "getHubRange");
+            mSetHubRange           = safeMethod(clsHubBE, "setHubRange", int.class);
+            mGetHubLabel           = safeMethod(clsHubBE, "getHubLabel");
+            mSetHubLabel           = safeMethod(clsHubBE, "setHubLabel", String.class);
             mRefreshNetworkSummary = safeMethod(clsHubBE, "refreshNetworkSummary");
 
             // ── InventorySummary (Create) ──────────────────────────────────
-            Class<?> clsInventorySummary =
-                    Class.forName("com.simibubi.create.content.logistics.packager.InventorySummary");
-            Class<?> clsBigItemStack =
-                    Class.forName("com.simibubi.create.content.logistics.BigItemStack");
-            mGetStacks = clsInventorySummary.getMethod("getStacks");
-            fBisStack  = clsBigItemStack.getField("stack");
-            fBisCount  = clsBigItemStack.getField("count");
-            fBisStack.setAccessible(true);
-            fBisCount.setAccessible(true);
+            try {
+                Class<?> clsInventorySummary =
+                        Class.forName("com.simibubi.create.content.logistics.packager.InventorySummary");
+                Class<?> clsBigItemStack =
+                        Class.forName("com.simibubi.create.content.logistics.BigItemStack");
+                mGetStacks = safeMethod(clsInventorySummary, "getStacks");
+                try { fBisStack = clsBigItemStack.getField("stack"); fBisStack.setAccessible(true); }
+                catch (Throwable t) { log.warn("[LogicLinkAdapter] BigItemStack.stack field missing: {}", t.toString()); }
+                try { fBisCount = clsBigItemStack.getField("count"); fBisCount.setAccessible(true); }
+                catch (Throwable t) { log.warn("[LogicLinkAdapter] BigItemStack.count field missing: {}", t.toString()); }
+            } catch (Throwable t) {
+                log.warn("[LogicLinkAdapter] Create InventorySummary/BigItemStack not found: {}", t.toString());
+            }
 
-            // ── Hub Peripheral ─────────────────────────────────────────────
-            Class<?> clsHubPeri =
-                    safeClass("com.apocscode.logiclink.peripheral.LogicLinkPeripheral");
+            // ── Hub Peripheral (reflective ctor + methods) ─────────────────
+            Class<?> clsHubPeri = safeClass("com.apocscode.logiclink.peripheral.LogicLinkPeripheral");
             if (clsHubPeri != null) {
-                ctorHub = clsHubPeri.getConstructor(clsHubBE);
-                mGetLinks                   = safeMethod(clsHubPeri, "getLinks");
-                mGetSensors                 = safeMethod(clsHubPeri, "getSensors");
-                mGetDevices                 = safeMethod(clsHubPeri, "getDevices");
-                mGetGauges                  = safeMethod(clsHubPeri, "getGauges");
-                mGetPosition                = safeMethod(clsHubPeri, "getPosition");
-                mGetRemoteSensorData        = safeMethod(clsHubPeri, "getRemoteSensorData", String.class);
-                mGetRemoteMotorInfo         = safeMethod(clsHubPeri, "getRemoteMotorInfo",  String.class);
-                mEnableRemote               = safeMethod(clsHubPeri, "enableRemote",         String.class, boolean.class);
-                mSetRemoteSpeed             = safeMethod(clsHubPeri, "setRemoteSpeed",       String.class, int.class);
-                mSetRemoteModifier          = safeMethod(clsHubPeri, "setRemoteModifier",    String.class, double.class);
-                mSetRemoteReversed          = safeMethod(clsHubPeri, "setRemoteReversed",    String.class, boolean.class);
-                mSetDeviceLabel             = safeMethod(clsHubPeri, "setDeviceLabel",        String.class, String.class);
-                mGetDeviceLabel             = safeMethod(clsHubPeri, "getDeviceLabel",        String.class);
-                mCycleTrackSwitch           = safeMethod(clsHubPeri, "cycleTrackSwitch",     String.class);
-                mGetTrainBlockData          = safeMethod(clsHubPeri, "getTrainBlockData",     String.class);
-                mSetRemoteRedstoneOutput    = safeMethod(clsHubPeri, "setRemoteRedstoneOutput",
+                try { ctorHub = clsHubPeri.getConstructor(clsHubBE); }
+                catch (Throwable t) { log.warn("[LogicLinkAdapter] LogicLinkPeripheral ctor missing: {}", t.toString()); }
+                mGetLinks                    = safeMethod(clsHubPeri, "getLinks");
+                mGetSensors                  = safeMethod(clsHubPeri, "getSensors");
+                mGetDevices                  = safeMethod(clsHubPeri, "getDevices");
+                mGetGauges                   = safeMethod(clsHubPeri, "getGauges");
+                mGetPosition                 = safeMethod(clsHubPeri, "getPosition");
+                mGetRemoteSensorData         = safeMethod(clsHubPeri, "getRemoteSensorData", String.class);
+                mGetRemoteMotorInfo          = safeMethod(clsHubPeri, "getRemoteMotorInfo",  String.class);
+                mEnableRemote                = safeMethod(clsHubPeri, "enableRemote",        String.class, boolean.class);
+                mSetRemoteSpeed              = safeMethod(clsHubPeri, "setRemoteSpeed",      String.class, int.class);
+                mSetRemoteModifier           = safeMethod(clsHubPeri, "setRemoteModifier",   String.class, double.class);
+                mSetRemoteReversed           = safeMethod(clsHubPeri, "setRemoteReversed",   String.class, boolean.class);
+                mSetDeviceLabel              = safeMethod(clsHubPeri, "setDeviceLabel",      String.class, String.class);
+                mGetDeviceLabel              = safeMethod(clsHubPeri, "getDeviceLabel",      String.class);
+                mCycleTrackSwitch            = safeMethod(clsHubPeri, "cycleTrackSwitch",    String.class);
+                mGetTrainBlockData           = safeMethod(clsHubPeri, "getTrainBlockData",   String.class);
+                mSetRemoteRedstoneOutput     = safeMethod(clsHubPeri, "setRemoteRedstoneOutput",
                         String.class, String.class, String.class, int.class);
-                mGetRemoteRedstoneInput     = safeMethod(clsHubPeri, "getRemoteRedstoneInput",
+                mGetRemoteRedstoneInput      = safeMethod(clsHubPeri, "getRemoteRedstoneInput",
                         String.class, String.class, String.class);
-                mGetRemoteRedstoneChannels  = safeMethod(clsHubPeri, "getRemoteRedstoneChannels", String.class);
-                mSetAllRemoteRedstoneOutputs= safeMethod(clsHubPeri, "setAllRemoteRedstoneOutputs",
+                mGetRemoteRedstoneChannels   = safeMethod(clsHubPeri, "getRemoteRedstoneChannels", String.class);
+                mSetAllRemoteRedstoneOutputs = safeMethod(clsHubPeri, "setAllRemoteRedstoneOutputs",
                         String.class, int.class);
-                mRequestItem                = safeMethod(clsHubPeri, "requestItem",
+                mRequestItem                 = safeMethod(clsHubPeri, "requestItem",
                         String.class, int.class, String.class);
-                mRequestItems               = safeMethod(clsHubPeri, "requestItems",
+                mRequestItems                = safeMethod(clsHubPeri, "requestItems",
                         Map.class, String.class);
-                mGetAllRemoteSensorData     = safeMethod(clsHubPeri, "getAllRemoteSensorData");
-                mGetTrackSwitchState        = safeMethod(clsHubPeri, "getTrackSwitchState", String.class);
+                mGetAllRemoteSensorData      = safeMethod(clsHubPeri, "getAllRemoteSensorData");
+                mGetTrackSwitchState         = safeMethod(clsHubPeri, "getTrackSwitchState", String.class);
+            } else {
+                log.warn("[LogicLinkAdapter] LogicLinkPeripheral class not found (network/remote methods disabled)");
             }
 
-            // ── Sensor BE (direct) ─────────────────────────────────────────
+            // ── Sensor BE direct methods ───────────────────────────────────
             if (clsSensorBE != null) {
-                mSensorGetCachedData = safeMethod(clsSensorBE, "getCachedData");
-                mSensorGetTargetPos  = safeMethod(clsSensorBE, "getTargetPos");                mSensorIsLinked          = safeMethod(clsSensorBE, "isLinked");
+                mSensorGetCachedData       = safeMethod(clsSensorBE, "getCachedData");
+                mSensorGetTargetPos        = safeMethod(clsSensorBE, "getTargetPos");
+                mSensorIsLinked            = safeMethod(clsSensorBE, "isLinked");
                 mSensorGetNetworkFrequency = safeMethod(clsSensorBE, "getNetworkFrequency");
-                mSensorRefresh           = safeMethod(clsSensorBE, "refresh");
-                if (mSensorRefresh == null)
-                    mSensorRefresh       = safeMethod(clsSensorBE, "refreshSensorData");
-                if (mSensorRefresh == null)
-                    mSensorRefresh       = safeMethod(clsSensorBE, "updateCachedData");            }
-
-            // ── Motor BE (direct) ──────────────────────────────────────────
-            if (clsMotorBE != null) {
-                mMotorIsEnabled          = safeMethod(clsMotorBE, "isEnabled");
-                mMotorSetEnabled         = safeMethod(clsMotorBE, "setEnabled",            boolean.class);
-                mMotorGetSpeed           = safeMethod(clsMotorBE, "getMotorSpeed");
-                mMotorSetSpeed           = safeMethod(clsMotorBE, "setMotorSpeed",          int.class);
-                mMotorGetActualSpeed     = safeMethod(clsMotorBE, "getActualSpeed");
-                mMotorGetStressCapacity  = safeMethod(clsMotorBE, "getStressCapacityValue");
-                mMotorGetStressUsage     = safeMethod(clsMotorBE, "getStressUsageValue");
-                mMotorIsSequenceRunning  = safeMethod(clsMotorBE, "isSequenceRunning");
-                mMotorGetSequenceSize    = safeMethod(clsMotorBE, "getSequenceSize");
-                mMotorClearSequence      = safeMethod(clsMotorBE, "clearSequence");
-                mMotorAddRotateStep      = safeMethod(clsMotorBE, "addRotateStep", float.class, int.class);
-                mMotorAddWaitStep        = safeMethod(clsMotorBE, "addWaitStep",   int.class);
-                mMotorAddSpeedStep       = safeMethod(clsMotorBE, "addSpeedStep",  int.class);
-                mMotorRunSequence        = safeMethod(clsMotorBE, "runSequence",   boolean.class);
-                mMotorStopSequence       = safeMethod(clsMotorBE, "stopSequence");
+                mSensorRefresh             = safeMethod(clsSensorBE, "refresh");
+                if (mSensorRefresh == null) mSensorRefresh = safeMethod(clsSensorBE, "refreshSensorData");
+                if (mSensorRefresh == null) mSensorRefresh = safeMethod(clsSensorBE, "updateCachedData");
             }
 
-            // ── Drive BE (direct) ──────────────────────────────────────────
+            // ── Motor BE direct methods ────────────────────────────────────
+            if (clsMotorBE != null) {
+                mMotorIsEnabled         = safeMethod(clsMotorBE, "isEnabled");
+                mMotorSetEnabled        = safeMethod(clsMotorBE, "setEnabled",       boolean.class);
+                mMotorGetSpeed          = safeMethod(clsMotorBE, "getMotorSpeed");
+                mMotorSetSpeed          = safeMethod(clsMotorBE, "setMotorSpeed",    int.class);
+                mMotorGetActualSpeed    = safeMethod(clsMotorBE, "getActualSpeed");
+                mMotorGetStressCapacity = safeMethod(clsMotorBE, "getStressCapacityValue");
+                mMotorGetStressUsage    = safeMethod(clsMotorBE, "getStressUsageValue");
+                mMotorIsSequenceRunning = safeMethod(clsMotorBE, "isSequenceRunning");
+                mMotorGetSequenceSize   = safeMethod(clsMotorBE, "getSequenceSize");
+                mMotorClearSequence     = safeMethod(clsMotorBE, "clearSequence");
+                mMotorAddRotateStep     = safeMethod(clsMotorBE, "addRotateStep", float.class, int.class);
+                mMotorAddWaitStep       = safeMethod(clsMotorBE, "addWaitStep",   int.class);
+                mMotorAddSpeedStep      = safeMethod(clsMotorBE, "addSpeedStep",  int.class);
+                mMotorRunSequence       = safeMethod(clsMotorBE, "runSequence",   boolean.class);
+                mMotorStopSequence      = safeMethod(clsMotorBE, "stopSequence");
+            }
+
+            // ── Drive BE direct methods ────────────────────────────────────
             if (clsDriveBE != null) {
-                mDriveIsEnabled   = safeMethod(clsDriveBE, "isMotorEnabled");
-                mDriveSetEnabled  = safeMethod(clsDriveBE, "setMotorEnabled",  boolean.class);
-                mDriveGetModifier = safeMethod(clsDriveBE, "getSpeedModifier");
-                mDriveSetModifier = safeMethod(clsDriveBE, "setSpeedModifier", float.class);
-                mDriveIsReversed  = safeMethod(clsDriveBE, "isReversed");
-                mDriveSetReversed = safeMethod(clsDriveBE, "setReversed",      boolean.class);
-                mDriveGetInputSpeed   = safeMethod(clsDriveBE, "getInputSpeed");
-                mDriveGetOutputSpeed  = safeMethod(clsDriveBE, "getOutputSpeed");
-                mDriveClearSequence   = safeMethod(clsDriveBE, "clearSequence");
-                mDriveAddRotateStep   = safeMethod(clsDriveBE, "addRotateStep",   float.class, float.class);
-                mDriveAddWaitStep     = safeMethod(clsDriveBE, "addWaitStep",     int.class);
-                mDriveAddModifierStep = safeMethod(clsDriveBE, "addModifierStep", float.class);
-                mDriveRunSequence     = safeMethod(clsDriveBE, "runSequence",     boolean.class);
-                mDriveStopSequence    = safeMethod(clsDriveBE, "stopSequence");
+                mDriveIsEnabled         = safeMethod(clsDriveBE, "isMotorEnabled");
+                mDriveSetEnabled        = safeMethod(clsDriveBE, "setMotorEnabled",  boolean.class);
+                mDriveGetModifier       = safeMethod(clsDriveBE, "getSpeedModifier");
+                mDriveSetModifier       = safeMethod(clsDriveBE, "setSpeedModifier", float.class);
+                mDriveIsReversed        = safeMethod(clsDriveBE, "isReversed");
+                mDriveSetReversed       = safeMethod(clsDriveBE, "setReversed",      boolean.class);
+                mDriveGetInputSpeed     = safeMethod(clsDriveBE, "getInputSpeed");
+                mDriveGetOutputSpeed    = safeMethod(clsDriveBE, "getOutputSpeed");
+                mDriveClearSequence     = safeMethod(clsDriveBE, "clearSequence");
+                mDriveAddRotateStep     = safeMethod(clsDriveBE, "addRotateStep",   float.class, float.class);
+                mDriveAddWaitStep       = safeMethod(clsDriveBE, "addWaitStep",     int.class);
+                mDriveAddModifierStep   = safeMethod(clsDriveBE, "addModifierStep", float.class);
+                mDriveRunSequence       = safeMethod(clsDriveBE, "runSequence",     boolean.class);
+                mDriveStopSequence      = safeMethod(clsDriveBE, "stopSequence");
                 mDriveIsSequenceRunning = safeMethod(clsDriveBE, "isSequenceRunning");
                 mDriveGetSequenceSize   = safeMethod(clsDriveBE, "getSequenceSize");
             }
 
-            // ── Redstone Controller BE (direct) ────────────────────────────
+            // ── Redstone Controller BE direct methods ──────────────────────
             if (clsRedstoneBE != null) {
                 mRedstoneSetOutput      = safeMethod(clsRedstoneBE, "setOutput",
                         String.class, String.class, int.class);
@@ -1281,7 +1313,8 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
             if (clsTrainCtrlBE != null) {
                 Class<?> clsTcPeri = safeClass("com.apocscode.logiclink.peripheral.TrainControllerPeripheral");
                 if (clsTcPeri != null) {
-                    try { ctorTrainCtrl = clsTcPeri.getConstructor(clsTrainCtrlBE); } catch (Exception ignored) {}
+                    try { ctorTrainCtrl = clsTcPeri.getConstructor(clsTrainCtrlBE); }
+                    catch (Throwable t) { log.warn("[LogicLinkAdapter] TrainControllerPeripheral ctor missing: {}", t.toString()); }
                     mTcGetTrains          = safeMethod(clsTcPeri, "getTrains");
                     mTcGetTrain           = safeMethod(clsTcPeri, "getTrain", String.class);
                     mTcGetStations        = safeMethod(clsTcPeri, "getStations");
@@ -1295,16 +1328,49 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
                 }
             }
 
+            log.info("[LogicLinkAdapter] Cache built: hub={} sensor={} motor={} drive={} redstone={} train={}",
+                    clsHubBE != null, clsSensorBE != null, clsMotorBE != null,
+                    clsDriveBE != null, clsRedstoneBE != null, clsTrainCtrlBE != null);
+            cacheReady = true;
             return true;
-        } catch (Exception e) {
-            clsHubBE = null;
-            return false;
         }
     }
 
     // ══════════════════════════════════════════════════════════════════════
     // Helper: table-building shortcuts
     // ══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Zero-arg peripheral method → result, pre-computed on the calling thread (must be server thread).
+     * The result is captured at table-build time; the closure just returns it.
+     * This avoids Level.getChunk() deadlocks when the method is called from a Lua coroutine thread.
+     */
+    private static void addResult0Precomputed(LuaTable t, String name, Object peri, Method m) {
+        LuaValue precomputed;
+        if (peri == null || m == null) {
+            precomputed = new LuaTable();
+        } else {
+            try { precomputed = javaToLua(m.invoke(peri)); }
+            catch (Exception e) { precomputed = new LuaTable(); }
+        }
+        final LuaValue result = precomputed;
+        t.set(name, new ZeroArgFunction() {
+            @Override public LuaValue call() { return result; }
+        });
+    }
+
+    /** Dispatch a Runnable to the server thread. Safe to call from any thread. Fire-and-forget. */
+    private static void runOnServer(BlockEntity be, Runnable r) {
+        if (be.getLevel() instanceof net.minecraft.server.level.ServerLevel sl)
+            sl.getServer().execute(r);
+    }
+
+    /** Returns true if the current thread is the Minecraft server thread. */
+    private static boolean isServerThread(BlockEntity be) {
+        if (be.getLevel() instanceof net.minecraft.server.level.ServerLevel sl)
+            return sl.getServer().isSameThread();
+        return false;
+    }
 
     /** Zero-arg peripheral method → result. */
     private static void addResult0(LuaTable t, String name, Object peri, Method m) {
@@ -1317,11 +1383,12 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
         });
     }
 
-    /** Single-String-arg peripheral method → result. */
-    private static void addResult1S(LuaTable t, String name, Object peri, Method m) {
+    /** Single-String-arg peripheral method → result (server-thread only; returns NIL if on coroutine thread). */
+    private static void addResult1S(LuaTable t, String name, Object peri, Method m, BlockEntity be) {
         t.set(name, new OneArgFunction() {
             @Override public LuaValue call(LuaValue arg) {
                 if (peri == null || m == null) return LuaValue.NIL;
+                if (!isServerThread(be)) return LuaValue.NIL;
                 try { return javaToLua(m.invoke(peri, arg.checkjstring())); }
                 catch (Exception e) { return LuaValue.NIL; }
             }

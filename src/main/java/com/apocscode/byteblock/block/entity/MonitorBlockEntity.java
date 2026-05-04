@@ -825,9 +825,19 @@ public class MonitorBlockEntity extends BlockEntity {
     }
 
     private void syncToClient() {
-        if (level != null && !level.isClientSide()) {
-            setChanged();
-            level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
+        if (level == null || level.isClientSide()) return;
+        if (level instanceof net.minecraft.server.level.ServerLevel sl) {
+            if (sl.getServer().isSameThread()) {
+                setChanged();
+                level.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
+            } else {
+                // Called from a Lua coroutine thread — dispatch to server thread to avoid
+                // Level.getChunk() → CompletableFuture.join() deadlock.
+                sl.getServer().execute(() -> {
+                    setChanged();
+                    sl.sendBlockUpdated(worldPosition, getBlockState(), getBlockState(), 3);
+                });
+            }
         }
     }
 

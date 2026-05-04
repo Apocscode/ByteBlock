@@ -1,12 +1,16 @@
 package com.apocscode.byteblock.client;
 
 import com.apocscode.byteblock.menu.DroneMenu;
+import com.apocscode.byteblock.network.PackUpEntityPayload;
+import com.apocscode.byteblock.network.SetDroneHomePayload;
+import com.apocscode.byteblock.network.SetEntityChannelPayload;
 import com.apocscode.byteblock.network.SetEntityLabelPayload;
 
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.player.Inventory;
 import net.neoforged.neoforge.network.PacketDistributor;
@@ -46,7 +50,21 @@ public class DroneScreen extends AbstractContainerScreen<DroneMenu> {
         addRenderableWidget(Button.builder(Component.literal("Paint"),
                 b -> this.minecraft.setScreen(new DroneCustomizeScreen(menu.getDrone())))
             .pos(leftPos + 6, topPos - 22)
-            .size(60, 18)
+            .size(48, 18)
+            .build());
+
+        // Pack Up — serialise entity into spawn egg and remove it from the world
+        addRenderableWidget(Button.builder(Component.literal("Pack Up"),
+                b -> PacketDistributor.sendToServer(new PackUpEntityPayload(menu.getDrone().getId())))
+            .pos(leftPos + 56, topPos - 22)
+            .size(46, 18)
+            .build());
+
+        // Set Home — pins drone's current position as home
+        addRenderableWidget(Button.builder(Component.literal("Set Home"),
+                b -> PacketDistributor.sendToServer(new SetDroneHomePayload(menu.getDrone().getId())))
+            .pos(leftPos + 104, topPos - 22)
+            .size(66, 18)
             .build());
     }
 
@@ -80,12 +98,26 @@ public class DroneScreen extends AbstractContainerScreen<DroneMenu> {
         int x = leftPos;
         int y = topPos;
 
-        // Floating header panel for the Paint button.
-        int hY = y - 24;
-        gui.fill(x, hY, x + imageWidth, hY + 22, 0xFFC6C6C6);
+        // Floating header panel — extended to show home coords above the buttons.
+        int hY = y - 38;
+        gui.fill(x, hY, x + imageWidth, y - 1, 0xFFC6C6C6);
         gui.fill(x, hY, x + imageWidth, hY + 1, 0xFFFFFFFF);
-        gui.fill(x, hY, x + 1, hY + 22, 0xFFFFFFFF);
-        gui.fill(x + imageWidth - 1, hY, x + imageWidth, hY + 22, 0xFF555555);
+        gui.fill(x, hY, x + 1, y - 1, 0xFFFFFFFF);
+        gui.fill(x + imageWidth - 1, hY, x + imageWidth, y - 1, 0xFF555555);
+        // Separator between coords row and buttons row.
+        gui.fill(x + 1, y - 25, x + imageWidth - 1, y - 24, 0xFF999999);
+        // Home coordinates display.
+        BlockPos syncedHome = menu.getDrone().getSyncedHomePos();
+        String homeText = syncedHome != null
+                ? "Home: " + syncedHome.getX() + ", " + syncedHome.getY() + ", " + syncedHome.getZ()
+                : "Home: not set";
+        int homeTextColor = syncedHome != null ? 0xFF404040 : 0xFF888888;
+        gui.drawString(font, homeText, x + 8, hY + 4, homeTextColor, false);
+
+        // Channel widget: [-] CH:N [+] — right side of coords row.
+        int ch = menu.getDrone().getSyncedBluetoothChannel();
+        int cwX = x + 102, cwY = hY + 3;
+        drawChannelWidget(gui, cwX, cwY, ch);
 
         gui.fill(x, y, x + imageWidth, y + imageHeight, 0xFFC6C6C6);
         gui.fill(x, y, x + imageWidth, y + 1, 0xFFFFFFFF);
@@ -107,10 +139,16 @@ public class DroneScreen extends AbstractContainerScreen<DroneMenu> {
         renderSlotBg(gui, x + 7, y + 55);
         gui.drawString(font, "G", x + 26, y + 60, 0xFF404040, false);
 
+        // Upgrade slots (right column, beside fuel bar)
+        for (int i = 0; i < 4; i++) {
+            renderSlotBg(gui, x + 151, y + 17 + i * 18);
+        }
+        gui.drawString(font, "UP", x + 153, y + 5, 0xFF404040, false);
+
         // Fuel bar
         int barX = x + 138, barY = y + 17, barW = 10, barH = 54;
         gui.fill(barX, barY, barX + barW, barY + barH, 0xFF373737);
-        int fuel = menu.getDrone().getFuelTicks();
+        int fuel = menu.getDrone().getSyncedFuel();
         int maxFuel = 72000;
         int pct = fuel * barH / maxFuel;
         // Gradient: red < 10% → orange → yellow → light green → green at full.
@@ -140,6 +178,20 @@ public class DroneScreen extends AbstractContainerScreen<DroneMenu> {
         gui.fill(x + 1, y + 1, x + 17, y + 17, 0xFF8B8B8B);
     }
 
+    /** Renders a small [-] CH:N [+] widget at (cwX, cwY) — 52×10 px. */
+    private void drawChannelWidget(GuiGraphics gui, int cwX, int cwY, int ch) {
+        // [-] button
+        gui.fill(cwX, cwY, cwX + 10, cwY + 10, 0xFF555555);
+        gui.fill(cwX + 1, cwY + 1, cwX + 9, cwY + 9, 0xFF777777);
+        gui.drawString(font, "-", cwX + 2, cwY + 1, 0xFFFFFFFF, false);
+        // channel text
+        gui.drawString(font, "CH:" + ch, cwX + 13, cwY + 1, 0xFF404040, false);
+        // [+] button
+        gui.fill(cwX + 42, cwY, cwX + 52, cwY + 10, 0xFF555555);
+        gui.fill(cwX + 43, cwY + 1, cwX + 51, cwY + 9, 0xFF777777);
+        gui.drawString(font, "+", cwX + 44, cwY + 1, 0xFFFFFFFF, false);
+    }
+
     @Override
     protected void renderLabels(GuiGraphics gui, int mouseX, int mouseY) {
         gui.drawString(this.font, this.playerInventoryTitle, this.inventoryLabelX, this.inventoryLabelY, 0x404040, false);
@@ -150,7 +202,7 @@ public class DroneScreen extends AbstractContainerScreen<DroneMenu> {
         super.render(gui, mouseX, mouseY, partialTick);
         int barX = leftPos + 138, barY = topPos + 17;
         if (mouseX >= barX && mouseX < barX + 10 && mouseY >= barY && mouseY < barY + 54) {
-            int fuel = menu.getDrone().getFuelTicks();
+            int fuel = menu.getDrone().getSyncedFuel();
             gui.renderTooltip(this.font,
                 Component.literal("Fuel: " + (fuel / 20) + "s"),
                 mouseX, mouseY);
@@ -160,6 +212,20 @@ public class DroneScreen extends AbstractContainerScreen<DroneMenu> {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        // Channel widget hit-test (x+102 to x+154, hY+3 to hY+13).
+        int cwX = leftPos + 102, cwY = topPos - 35;
+        if (mouseY >= cwY && mouseY < cwY + 10) {
+            if (mouseX >= cwX && mouseX < cwX + 10) {
+                int ch = menu.getDrone().getSyncedBluetoothChannel();
+                PacketDistributor.sendToServer(new SetEntityChannelPayload(menu.getDrone().getId(), ch - 1));
+                return true;
+            }
+            if (mouseX >= cwX + 42 && mouseX < cwX + 52) {
+                int ch = menu.getDrone().getSyncedBluetoothChannel();
+                PacketDistributor.sendToServer(new SetEntityChannelPayload(menu.getDrone().getId(), ch + 1));
+                return true;
+            }
+        }
         boolean handled = super.mouseClicked(mouseX, mouseY, button);
         if (labelField != null && !labelField.isMouseOver(mouseX, mouseY) && labelField.isFocused()) {
             sendLabel();

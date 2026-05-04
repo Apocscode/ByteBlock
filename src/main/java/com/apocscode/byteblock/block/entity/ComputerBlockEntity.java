@@ -29,6 +29,10 @@ import java.util.UUID;
  * and that programs can control via the {@code ButtonsLib} API.
  */
 public class ComputerBlockEntity extends BlockEntity implements IButtonPanel {
+    private static final String ME_DASHBOARD_SETTINGS_KEY = "me_dashboard.settings.tsv";
+    private static final String ME_DASHBOARD_SETTINGS_FILE = "/Users/User/Documents/.me_dashboard_settings";
+    private static final String ME_DASHBOARD_SETTINGS_FILE_FALLBACK = "/Users/User/Documents/me_dashboard_settings";
+
     private UUID computerId = UUID.randomUUID();
     private boolean powered = true;
     private JavaOS os;
@@ -81,28 +85,42 @@ public class ComputerBlockEntity extends BlockEntity implements IButtonPanel {
         }
         if (!powered) return;
         os.setWorldContext(level, worldPosition);
-        os.tick();
-        if (level != null && !level.isClientSide() && os.getFileSystem().isDirty()) {
-            os.getFileSystem().clearDirty();
-            setChanged();
-            // Push freshly-modified VFS contents to the on-disk mirror so
-            // external editors see the changes.
-            pushVfsToDisk();
-        }
-        // Periodically poll the on-disk mirror for external edits and merge
-        // them back into the running OS. Runs every ~2 seconds.
+
+        // Load disk-mirrored files before programs tick so app settings are
+        // available immediately and cannot be overwritten by startup defaults.
         if (level != null && !level.isClientSide()) {
             long now = System.currentTimeMillis();
             if (!diskMirrorInitialized) {
                 pullVfsFromDisk();
                 pushVfsToDisk(); // seed disk with whatever loaded from NBT
                 diskMirrorInitialized = true;
+                lastDiskPollMs = now;
             } else if (now - lastDiskPollMs > 2000L) {
                 lastDiskPollMs = now;
                 if (com.apocscode.byteblock.computer.VfsDiskMirror.hasExternalChanges(
                         getDiskMirrorRoot(), lastDiskPushMs)) {
                     pullVfsFromDisk();
                     setChanged();
+                }
+            }
+        }
+
+        // Snapshot nearby block entities on the server thread BEFORE the
+        // Lua coroutine can read them. Avoids server-thread/coroutine
+        // deadlock when peripheral.find() walks chunks.
+        os.refreshPeripheralSnapshot();
+        os.tick();
+        if (level != null && !level.isClientSide()) {
+            boolean vfsDirty = os.getFileSystem().isDirty();
+            boolean persistentDirty = os.isPersistentDataDirty();
+            if (vfsDirty || persistentDirty) {
+                os.getFileSystem().clearDirty();
+                os.clearPersistentDataDirty();
+                setChanged();
+                // Push freshly-modified VFS contents to the on-disk mirror so
+                // external editors see the changes.
+                if (vfsDirty) {
+                    pushVfsToDisk();
                 }
             }
         }
@@ -251,6 +269,24 @@ public class ComputerBlockEntity extends BlockEntity implements IButtonPanel {
         setChanged();
     }
 
+    /**
+     * Persist ME Dashboard settings on the authoritative server-side OS state.
+     */
+    public void writeMeDashboardSettings(String compactData, String fullData) {
+        if (os == null || os.getFileSystem() == null) return;
+
+        String compact = compactData == null ? "" : compactData;
+        String full = fullData == null ? compact : fullData;
+
+        os.setPersistentValue(ME_DASHBOARD_SETTINGS_KEY, compact);
+        os.getFileSystem().writeFile(ME_DASHBOARD_SETTINGS_FILE, full);
+        os.getFileSystem().writeFile(ME_DASHBOARD_SETTINGS_FILE_FALLBACK, full);
+        com.apocscode.byteblock.ByteBlock.LOGGER.warn(
+            "[ME Dashboard] writeMeDashboardSettings: comp={} compactLen={} fullLen={}",
+            computerId, compact.length(), full.length());
+        syncToClient();
+    }
+
     // ── IButtonPanel implementation ──────────────────────────────────────────
 
     @Override public int getButtonStates() { return buttonStates; }
@@ -392,6 +428,7 @@ public class ComputerBlockEntity extends BlockEntity implements IButtonPanel {
         tag.putString("Label", os.getLabel());
         tag.putInt("BluetoothChannel", os.getBluetoothChannel());
         tag.put("Filesystem", os.getFileSystem().save());
+        tag.put("PersistentData", os.savePersistentData());
 
         // Virtual button panel
         tag.putUUID("PanelDeviceId", panelDeviceId);
@@ -426,6 +463,17 @@ public class ComputerBlockEntity extends BlockEntity implements IButtonPanel {
             // Re-seed any new default files added in mod updates (idempotent — uses !exists guards)
             os.installSystemPrograms();
         }
+        if (tag.contains("PersistentData", net.minecraft.nbt.Tag.TAG_COMPOUND)) {
+            os.loadPersistentData(tag.getCompound("PersistentData"));
+        }
+        com.apocscode.byteblock.ByteBlock.LOGGER.warn(
+            "[ME Dashboard] loadAdditional: comp={} side={} hasPersistentData={} persistentKeys={}",
+            computerId,
+            (level != null ? (level.isClientSide() ? "client" : "server") : "null"),
+            tag.contains("PersistentData", net.minecraft.nbt.Tag.TAG_COMPOUND),
+            tag.contains("PersistentData", net.minecraft.nbt.Tag.TAG_COMPOUND)
+                ? tag.getCompound("PersistentData").getAllKeys()
+                : java.util.Collections.emptySet());
 
         // Virtual button panel
         if (tag.contains("PanelDeviceId")) panelDeviceId = tag.getUUID("PanelDeviceId");
