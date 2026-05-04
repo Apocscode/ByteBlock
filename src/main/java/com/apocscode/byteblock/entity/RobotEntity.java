@@ -113,6 +113,11 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
     private int homingStuckTicks = 0;
     private int homingRepathCooldown = 0;
 
+        /** Shield upgrade — absorbs damage until depleted, then recharges over time. */
+        private float shieldHP = 0f;
+        private static final float SHIELD_MAX          = 8f;
+        private static final int   SHIELD_RECHARGE_TICKS = 20 * 30; // 30 s full recharge
+
     public RobotEntity(EntityType<? extends RobotEntity> type, Level level) {
         super(type, level);
         this.computerId = UUID.randomUUID();
@@ -188,6 +193,18 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
         if (level().getGameTime() % 10 == 0) {
             getEntityData().set(DATA_ENERGY, energyStorage.getEnergyStored());
         }
+
+            // Solar upgrade — regen FE when in direct sunlight during daytime
+            if (hasSolarUpgrade() && level().isDay()
+                    && level().canSeeSky(blockPosition())
+                    && level().getGameTime() % 20 == 0) {
+                energyStorage.receiveEnergy(50, false);
+            }
+
+            // Shield upgrade — slowly recharge shield buffer
+            if (hasShieldUpgrade() && shieldHP < SHIELD_MAX) {
+                shieldHP = Math.min(shieldHP + (SHIELD_MAX / SHIELD_RECHARGE_TICKS), SHIELD_MAX);
+            }
 
         // Register on Bluetooth
         BluetoothNetwork.register(level(), computerId, blockPosition(), bluetoothChannel);
@@ -1087,6 +1104,93 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
     public ItemStack getGpsToolStack() { return gpsToolStack; }
     public void setGpsToolStack(ItemStack stack) { this.gpsToolStack = stack == null ? ItemStack.EMPTY : stack; }
     public SimpleContainer getUpgradeSlots() { return upgradeSlots; }
+
+    /** Returns the current operation range in blocks based on installed range cards. Default 25. */
+    public int getOperationRange() {
+        int best = 25;
+        for (int i = 0; i < upgradeSlots.getContainerSize(); i++) {
+            ItemStack s = upgradeSlots.getItem(i);
+            if (s.getItem() instanceof com.apocscode.byteblock.item.UpgradeCard card
+                    && card.getUpgradeType().isRangeCard()) {
+                if (card.getUpgradeType() == com.apocscode.byteblock.item.UpgradeCard.Type.RANGE_CREATIVE)
+                    return Integer.MAX_VALUE;
+                best = Math.max(best, card.getUpgradeType().range);
+            }
+        }
+        return best;
+    }
+
+    /** Returns true if a Laser upgrade card is installed. */
+    public boolean hasLaserUpgrade() {
+        for (int i = 0; i < upgradeSlots.getContainerSize(); i++) {
+            ItemStack s = upgradeSlots.getItem(i);
+            if (s.getItem() instanceof com.apocscode.byteblock.item.UpgradeCard card
+                    && card.getUpgradeType().isLaserCard()) return true;
+        }
+        return false;
+    }
+
+    /** Returns a speed multiplier based on Speed upgrade cards. +60% per card, max 3×. */
+    public double getSpeedMultiplier() {
+        int count = 0;
+        for (int i = 0; i < upgradeSlots.getContainerSize(); i++) {
+            ItemStack s = upgradeSlots.getItem(i);
+            if (s.getItem() instanceof com.apocscode.byteblock.item.UpgradeCard card
+                    && card.getUpgradeType().isSpeedCard()) count++;
+        }
+        return Math.min(1.0 + count * 0.6, 3.0);
+    }
+
+    /** Returns true if an Inventory+ card is installed (unlocks extra cargo row). */
+    public boolean hasInventoryUpgrade() {
+        for (int i = 0; i < upgradeSlots.getContainerSize(); i++) {
+            ItemStack s = upgradeSlots.getItem(i);
+            if (s.getItem() instanceof com.apocscode.byteblock.item.UpgradeCard card
+                    && card.getUpgradeType().isInventoryCard()) return true;
+        }
+        return false;
+    }
+
+        public boolean hasShieldUpgrade() {
+            for (int i = 0; i < upgradeSlots.getContainerSize(); i++) {
+                ItemStack s = upgradeSlots.getItem(i);
+                if (s.getItem() instanceof com.apocscode.byteblock.item.UpgradeCard card
+                        && card.getUpgradeType().isShieldCard()) return true;
+            }
+            return false;
+        }
+
+        public boolean hasSolarUpgrade() {
+            for (int i = 0; i < upgradeSlots.getContainerSize(); i++) {
+                ItemStack s = upgradeSlots.getItem(i);
+                if (s.getItem() instanceof com.apocscode.byteblock.item.UpgradeCard card
+                        && card.getUpgradeType().isSolarCard()) return true;
+            }
+            return false;
+        }
+
+        public boolean hasStealthUpgrade() {
+            for (int i = 0; i < upgradeSlots.getContainerSize(); i++) {
+                ItemStack s = upgradeSlots.getItem(i);
+                if (s.getItem() instanceof com.apocscode.byteblock.item.UpgradeCard card
+                        && card.getUpgradeType().isStealthCard()) return true;
+            }
+            return false;
+        }
+
+        /** Returns current shield HP (0–SHIELD_MAX) for renderer. */
+        public float getShieldHP() { return shieldHP; }
+
+        @Override
+        public boolean hurt(net.minecraft.world.damagesource.DamageSource source, float amount) {
+            if (hasShieldUpgrade() && shieldHP > 0) {
+                float absorbed = Math.min(shieldHP, amount);
+                shieldHP -= absorbed;
+                amount -= absorbed;
+                if (amount <= 0) return false;
+            }
+            return super.hurt(source, amount);
+        }
 
     public java.util.UUID getOwnerId() { return ownerId; }
     public com.apocscode.byteblock.entity.EntityPaint getPaint() { return paint; }

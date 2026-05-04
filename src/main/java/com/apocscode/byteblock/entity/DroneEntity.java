@@ -95,7 +95,7 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
     private int hoverDrainCounter = 0;
     /** Ticks remaining before A* re-plan is allowed again (prevents thrashing). */
     private int replanCooldown = 0;
-    private final SimpleContainer inventory = new SimpleContainer(9);
+    private final SimpleContainer inventory = new SimpleContainer(18);
     private ItemStack batteryStack = ItemStack.EMPTY;
     private ItemStack gpsToolStack = ItemStack.EMPTY;
     private com.apocscode.byteblock.entity.EntityPaint paint = new com.apocscode.byteblock.entity.EntityPaint();
@@ -105,6 +105,10 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
     private boolean defender = false;  // attack nearby hostiles if true
     private int attackCooldown = 0;
     private int laserCooldown  = 0;
+        /** Shield upgrade — absorbs damage until depleted, then recharges over time. */
+        private float shieldHP = 0f;
+        private static final float SHIELD_MAX  = 8f;   // HP of shield buffer
+        private static final int   SHIELD_RECHARGE_TICKS = 20 * 30; // 30 s full recharge
     private String swarmGroup = "";    // if non-empty, drone only obeys "drone:swarm:<group>:..." on its channel
     private DroneVariant variant = DroneVariant.STANDARD;
 
@@ -219,6 +223,18 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
 
         // Drive mission VM while idle so scripts can enqueue waypoints/actions.
         tickMissionScript();
+
+            // Solar upgrade — regen fuel when in direct sunlight during day
+            if (hasSolarUpgrade() && level().isDay()
+                    && level().canSeeSky(blockPosition())
+                    && level().getGameTime() % 20 == 0) {
+                fuelTicks = Math.min(fuelTicks + 10, MAX_FUEL);
+            }
+
+            // Shield upgrade — slowly recharge shield buffer
+            if (hasShieldUpgrade() && shieldHP < SHIELD_MAX) {
+                shieldHP = Math.min(shieldHP + (SHIELD_MAX / SHIELD_RECHARGE_TICKS), SHIELD_MAX);
+            }
 
         // Auto-return when fuel is low and idle — prefer assigned charge pad over home pos
         if (fuelTicks > 0 && fuelTicks < LOW_FUEL_THRESHOLD && waypoints.isEmpty() && !missionActive) {
@@ -378,23 +394,27 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
         double hx   = hLen > 0.001 ? toTarget.x / hLen : 0;
         double hz   = hLen > 0.001 ? toTarget.z / hLen : 0;
 
+        double speedMult  = getSpeedMultiplier();
+        double flightSpd  = FLIGHT_SPEED * speedMult;
+        double vertSpd    = VERT_SPEED   * speedMult;
+
         Vec3 sep = computeDroneSeparation(from);
 
         // Prioritise vertical if we still need to climb significantly.
-        if (dy > VERT_SPEED + 0.1) {
+        if (dy > vertSpd + 0.1) {
             double hFrac = Math.max(0.0, 1.0 - dy / CRUISE_CLEARANCE);
-            double hStep = Math.min(FLIGHT_SPEED * hFrac, hLen);
-            return new Vec3(hx * hStep + sep.x, VERT_SPEED, hz * hStep + sep.z);
+            double hStep = Math.min(flightSpd * hFrac, hLen);
+            return new Vec3(hx * hStep + sep.x, vertSpd, hz * hStep + sep.z);
         }
 
-        double hStep = Math.min(FLIGHT_SPEED, hLen);
-        double moveY = Math.max(-VERT_SPEED, Math.min(VERT_SPEED, dy));
+        double hStep = Math.min(flightSpd, hLen);
+        double moveY = Math.max(-vertSpd, Math.min(vertSpd, dy));
 
         // Safety probe: if the very next block is occupied, force a climb.
         if (hLen > 0.1) {
             double px = from.x + hx, pz = from.z + hz;
             if (!isPassable(BlockPos.containing(px, from.y + 0.5, pz))) {
-                moveY = VERT_SPEED;
+                moveY = vertSpd;
                 hStep *= 0.2;
             }
         }
@@ -1106,6 +1126,71 @@ public class DroneEntity extends PathfinderMob implements net.minecraft.world.Me
         }
         return best;
     }
+
+    /**
+     * Returns a speed multiplier based on installed Speed upgrade cards.
+     * Each Speed card contributes +60% (stacks additively, capped at 3.0×).
+     */
+    public double getSpeedMultiplier() {
+        int count = 0;
+        for (int i = 0; i < upgradeSlots.getContainerSize(); i++) {
+            ItemStack s = upgradeSlots.getItem(i);
+            if (s.getItem() instanceof com.apocscode.byteblock.item.UpgradeCard card
+                    && card.getUpgradeType().isSpeedCard()) count++;
+        }
+        return Math.min(1.0 + count * 0.6, 3.0);
+    }
+
+    /** Returns true if any installed upgrade card is an inventory expansion card. */
+    public boolean hasInventoryUpgrade() {
+        for (int i = 0; i < upgradeSlots.getContainerSize(); i++) {
+            ItemStack s = upgradeSlots.getItem(i);
+            if (s.getItem() instanceof com.apocscode.byteblock.item.UpgradeCard card
+                    && card.getUpgradeType().isInventoryCard()) return true;
+        }
+        return false;
+    }
+
+        public boolean hasShieldUpgrade() {
+            for (int i = 0; i < upgradeSlots.getContainerSize(); i++) {
+                ItemStack s = upgradeSlots.getItem(i);
+                if (s.getItem() instanceof com.apocscode.byteblock.item.UpgradeCard card
+                        && card.getUpgradeType().isShieldCard()) return true;
+            }
+            return false;
+        }
+
+        public boolean hasSolarUpgrade() {
+            for (int i = 0; i < upgradeSlots.getContainerSize(); i++) {
+                ItemStack s = upgradeSlots.getItem(i);
+                if (s.getItem() instanceof com.apocscode.byteblock.item.UpgradeCard card
+                        && card.getUpgradeType().isSolarCard()) return true;
+            }
+            return false;
+        }
+
+        public boolean hasStealthUpgrade() {
+            for (int i = 0; i < upgradeSlots.getContainerSize(); i++) {
+                ItemStack s = upgradeSlots.getItem(i);
+                if (s.getItem() instanceof com.apocscode.byteblock.item.UpgradeCard card
+                        && card.getUpgradeType().isStealthCard()) return true;
+            }
+            return false;
+        }
+
+        /** Returns current shield HP (0–SHIELD_MAX) for renderer. */
+        public float getShieldHP() { return shieldHP; }
+
+        @Override
+        public boolean hurt(net.minecraft.world.damagesource.DamageSource source, float amount) {
+            if (hasShieldUpgrade() && shieldHP > 0) {
+                float absorbed = Math.min(shieldHP, amount);
+                shieldHP -= absorbed;
+                amount -= absorbed;
+                if (amount <= 0) return false;
+            }
+            return super.hurt(source, amount);
+        }
 
     @Override
     public void checkDespawn() {

@@ -26,10 +26,14 @@ public class DroneScreen extends AbstractContainerScreen<DroneMenu> {
     public DroneScreen(DroneMenu menu, Inventory playerInv, Component title) {
         super(menu, playerInv, title);
         this.imageWidth = 176;
-        this.imageHeight = 186;
-        this.inventoryLabelY = 92;
+        this.imageHeight = hasInventoryCard() ? 240 : 186;
+        this.inventoryLabelY = hasInventoryCard() ? 146 : 92;
         this.titleLabelX = 8;
         this.titleLabelY = 6;
+    }
+
+    private boolean hasInventoryCard() {
+        return menu.getDrone().hasInventoryUpgrade();
     }
 
     @Override
@@ -133,6 +137,14 @@ public class DroneScreen extends AbstractContainerScreen<DroneMenu> {
                 renderSlotBg(gui, x + 61 + col * 18, y + 17 + row * 18);
             }
         }
+        // Extra 3×3 cargo (Inventory+ card)
+        if (hasInventoryCard()) {
+            for (int row = 0; row < 3; row++) {
+                for (int col = 0; col < 3; col++) {
+                    renderSlotBg(gui, x + 61 + col * 18, y + 71 + row * 18);
+                }
+            }
+        }
         // Battery
         renderSlotBg(gui, x + 7, y + 35);
         gui.drawString(font, "FE", x + 26, y + 40, 0xFF404040, false);
@@ -159,15 +171,15 @@ public class DroneScreen extends AbstractContainerScreen<DroneMenu> {
             gui.fill(barX + 1, yRow, barX + barW - 1, yRow + 1, color);
         }
 
-        gui.fill(x + 7, y + 89, x + imageWidth - 7, y + 90, 0xFF999999);
+        gui.fill(x + 7, y + imageHeight - 97, x + imageWidth - 7, y + imageHeight - 96, 0xFF999999);
 
         for (int row = 0; row < 3; row++) {
             for (int col = 0; col < 9; col++) {
-                renderSlotBg(gui, x + 7 + col * 18, y + 103 + row * 18);
+                renderSlotBg(gui, x + 7 + col * 18, y + imageHeight - 83 + row * 18);
             }
         }
         for (int col = 0; col < 9; col++) {
-            renderSlotBg(gui, x + 7 + col * 18, y + 161);
+            renderSlotBg(gui, x + 7 + col * 18, y + imageHeight - 25);
         }
     }
 

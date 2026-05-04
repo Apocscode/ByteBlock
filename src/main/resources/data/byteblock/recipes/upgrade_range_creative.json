@@ -1,0 +1,14 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "ingredients": [
+    {"item": "byteblock:upgrade_range_2"},
+    {"item": "minecraft:nether_star"},
+    {"item": "minecraft:obsidian"},
+    {"item": "minecraft:obsidian"},
+    {"item": "minecraft:obsidian"}
+  ],
+  "result": {
+    "id": "byteblock:upgrade_range_creative",
+    "count": 1
+  }
+}

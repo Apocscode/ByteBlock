@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "GGG",
+    "GCG",
+    " P "
+  ],
+  "key": {
+    "G": {"item": "minecraft:glass_pane"},
+    "C": {"item": "minecraft:daylight_detector"},
+    "P": {"item": "minecraft:paper"}
+  },
+  "result": {
+    "id": "byteblock:upgrade_solar",
+    "count": 1
+  }
+}

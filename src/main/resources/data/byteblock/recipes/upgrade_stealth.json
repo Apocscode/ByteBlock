@@ -1,0 +1,19 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "FIF",
+    "GCG",
+    " P "
+  ],
+  "key": {
+    "F": {"item": "minecraft:fermented_spider_eye"},
+    "I": {"item": "minecraft:ink_sac"},
+    "G": {"item": "minecraft:gold_nugget"},
+    "C": {"item": "minecraft:comparator"},
+    "P": {"item": "minecraft:paper"}
+  },
+  "result": {
+    "id": "byteblock:upgrade_stealth",
+    "count": 1
+  }
+}

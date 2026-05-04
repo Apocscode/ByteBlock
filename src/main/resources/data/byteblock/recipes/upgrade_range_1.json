@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    " R ",
+    "GCG",
+    " P "
+  ],
+  "key": {
+    "R": {"item": "minecraft:redstone"},
+    "G": {"item": "minecraft:gold_nugget"},
+    "C": {"item": "minecraft:comparator"},
+    "P": {"item": "minecraft:paper"}
+  },
+  "result": {
+    "id": "byteblock:upgrade_range_1",
+    "count": 1
+  }
+}

@@ -23,17 +23,25 @@ import net.neoforged.neoforge.capabilities.Capabilities;
  * </ul>
  */
 public class DroneMenu extends AbstractContainerMenu {
-    public static final int CARGO_SLOTS = 9;
+    public static final int CARGO_BASE  = 9;   // always-visible 3×3
+    public static final int CARGO_EXTRA = 9;   // extra 3×3 unlocked by Inventory+ card
+    public static final int CARGO_SLOTS = CARGO_BASE + CARGO_EXTRA;
     private final DroneEntity drone;
 
     public DroneMenu(int containerId, Inventory playerInv, DroneEntity drone) {
         super(ModMenuTypes.DRONE.get(), containerId);
         this.drone = drone;
 
-        // 3×3 cargo grid (slots 0..8) — top-left at (62, 18)
+        // Base 3×3 cargo grid (slots 0..8) — top-left at (62, 18)
         for (int row = 0; row < 3; row++) {
             for (int col = 0; col < 3; col++) {
                 addSlot(new Slot(drone.getInventory(), col + row * 3, 62 + col * 18, 18 + row * 18));
+            }
+        }
+        // Extra 3×3 cargo grid (slots 9..17) — rendered below the base grid when card installed
+        for (int row = 0; row < 3; row++) {
+            for (int col = 0; col < 3; col++) {
+                addSlot(new Slot(drone.getInventory(), CARGO_BASE + col + row * 3, 62 + col * 18, 72 + row * 18));
             }
         }
         // Battery (slot 9)
@@ -44,7 +52,7 @@ public class DroneMenu extends AbstractContainerMenu {
         addSlot(new EntitySlot(drone::getGpsToolStack, drone::setGpsToolStack,
                 s -> s.isEmpty() || s.getItem() instanceof com.apocscode.byteblock.item.GpsToolItem,
                 8, 56));
-        // Upgrade slots (slots 11..14) — column to the right of the fuel bar
+        // Upgrade slots (slots 20..23) — column to the right of the fuel bar
         for (int i = 0; i < 4; i++) {
             final int idx = i;
             addSlot(new EntitySlot(
@@ -54,15 +62,15 @@ public class DroneMenu extends AbstractContainerMenu {
                     152, 18 + i * 18));
         }
 
-        // Player inventory rows (slots 15..41)
+        // Player inventory rows (slots 24..50)
         for (int row = 0; row < 3; row++) {
             for (int col = 0; col < 9; col++) {
-                addSlot(new Slot(playerInv, col + row * 9 + 9, 8 + col * 18, 104 + row * 18));
+                addSlot(new Slot(playerInv, col + row * 9 + 9, 8 + col * 18, 158 + row * 18));
             }
         }
-        // Hotbar (slots 42..50)
+        // Hotbar (slots 51..59)
         for (int col = 0; col < 9; col++) {
-            addSlot(new Slot(playerInv, col, 8 + col * 18, 162));
+            addSlot(new Slot(playerInv, col, 8 + col * 18, 216));
         }
     }
 
@@ -89,20 +97,21 @@ public class DroneMenu extends AbstractContainerMenu {
         ItemStack stack = slot.getItem();
         ItemStack copy = stack.copy();
 
-        final int cargoEnd     = CARGO_SLOTS;       // 9
-        final int accessoryEnd = cargoEnd + 2;      // 11 (battery + gps)
-        final int upgradeEnd   = accessoryEnd + 4;  // 15 (4 upgrade slots)
-        final int playerEnd    = upgradeEnd + 36;   // 51
+        final int cargoEnd     = CARGO_SLOTS;         // 18
+        final int batteryEnd   = cargoEnd + 1;         // 19 (battery)
+        final int gpsEnd       = batteryEnd + 1;       // 20 (gps)
+        final int upgradeEnd   = gpsEnd + 4;           // 24 (4 upgrade slots)
+        final int playerEnd    = upgradeEnd + 36;      // 60
 
         if (index < upgradeEnd) {
             if (!moveItemStackTo(stack, upgradeEnd, playerEnd, true)) return ItemStack.EMPTY;
         } else {
             if (stack.getItem() instanceof com.apocscode.byteblock.item.UpgradeCard) {
-                moveItemStackTo(stack, accessoryEnd, upgradeEnd, false);
+                moveItemStackTo(stack, gpsEnd, upgradeEnd, false);
             } else if (stack.getItem() instanceof com.apocscode.byteblock.item.GpsToolItem) {
-                moveItemStackTo(stack, accessoryEnd - 1, accessoryEnd, false);
+                moveItemStackTo(stack, batteryEnd, gpsEnd, false);
             } else if (stack.getCapability(Capabilities.EnergyStorage.ITEM) != null) {
-                moveItemStackTo(stack, cargoEnd, accessoryEnd - 1, false);
+                moveItemStackTo(stack, cargoEnd, batteryEnd, false);
             }
             if (!stack.isEmpty() && !moveItemStackTo(stack, 0, cargoEnd, false)) return ItemStack.EMPTY;
         }

@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "EEE",
+    "GCG",
+    " P "
+  ],
+  "key": {
+    "E": {"item": "minecraft:ender_pearl"},
+    "G": {"item": "minecraft:gold_ingot"},
+    "C": {"item": "minecraft:comparator"},
+    "P": {"item": "byteblock:upgrade_range_1"}
+  },
+  "result": {
+    "id": "byteblock:upgrade_range_2",
+    "count": 1
+  }
+}

@@ -75,6 +75,18 @@ public class ModItems {
     public static final DeferredItem<UpgradeCard> UPGRADE_LASER =
             ITEMS.register("upgrade_laser",
                     () -> new UpgradeCard(UpgradeCard.Type.LASER, new Item.Properties().stacksTo(1)));
+    public static final DeferredItem<UpgradeCard> UPGRADE_SHIELD =
+            ITEMS.register("upgrade_shield",
+                    () -> new UpgradeCard(UpgradeCard.Type.SHIELD, new Item.Properties().stacksTo(1)));
+    public static final DeferredItem<UpgradeCard> UPGRADE_STEALTH =
+            ITEMS.register("upgrade_stealth",
+                    () -> new UpgradeCard(UpgradeCard.Type.STEALTH, new Item.Properties().stacksTo(1)));
+    public static final DeferredItem<UpgradeCard> UPGRADE_SOLAR =
+            ITEMS.register("upgrade_solar",
+                    () -> new UpgradeCard(UpgradeCard.Type.SOLAR, new Item.Properties().stacksTo(1)));
+    public static final DeferredItem<UpgradeCard> UPGRADE_FILTER =
+            ITEMS.register("upgrade_filter",
+                    () -> new UpgradeCard(UpgradeCard.Type.FILTER, new Item.Properties().stacksTo(1)));
 
     // ByteChest
     public static final DeferredItem<BlockItem> BYTE_CHEST_ITEM = ITEMS.registerSimpleBlockItem("byte_chest", ModBlocks.BYTE_CHEST);

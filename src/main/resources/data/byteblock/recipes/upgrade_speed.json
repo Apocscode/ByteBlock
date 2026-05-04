@@ -1,0 +1,19 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "SRS",
+    "GCG",
+    " P "
+  ],
+  "key": {
+    "S": {"item": "minecraft:sugar"},
+    "R": {"item": "minecraft:rabbit_foot"},
+    "G": {"item": "minecraft:gold_nugget"},
+    "C": {"item": "minecraft:comparator"},
+    "P": {"item": "minecraft:paper"}
+  },
+  "result": {
+    "id": "byteblock:upgrade_speed",
+    "count": 1
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "pattern": [
+    "HEH",
+    "GCG",
+    " P "
+  ],
+  "key": {
+    "H": {"item": "minecraft:hopper"},
+    "E": {"item": "minecraft:emerald"},
+    "G": {"item": "minecraft:gold_nugget"},
+    "C": {"item": "minecraft:comparator"},
+    "P": {"item": "minecraft:paper"}
+  },
+  "result": {
+    "id": "byteblock:upgrade_filter",
+    "count": 1
+  }
+}
