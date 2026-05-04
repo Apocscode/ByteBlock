@@ -159,6 +159,42 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
     public String getModId() { return "logiclink"; }
 
     @Override
+    public java.util.List<String> getTypes(BlockEntity be) {
+        if (!ensureCache()) return java.util.List.of("logiclink");
+        if (clsHubBE       != null && clsHubBE.isInstance(be))       return java.util.List.of("logiclink",          "hub",     "storage");
+        if (clsSensorBE    != null && clsSensorBE.isInstance(be))    return java.util.List.of("logicsensor",        "sensor");
+        if (clsMotorBE     != null && clsMotorBE.isInstance(be))     return java.util.List.of("creative_logic_motor","motor",   "kinetic");
+        if (clsDriveBE     != null && clsDriveBE.isInstance(be))     return java.util.List.of("logic_drive",        "drive",   "kinetic");
+        if (clsRedstoneBE  != null && clsRedstoneBE.isInstance(be))  return java.util.List.of("redstone_controller","redstone");
+        if (clsTrainCtrlBE != null && clsTrainCtrlBE.isInstance(be)) return java.util.List.of("train_controller",   "trains",  "network");
+        return java.util.List.of("logiclink");
+    }
+
+    @Override
+    public java.util.List<String> getCapabilities(BlockEntity be) {
+        if (!ensureCache()) return java.util.List.of("wireless");
+        if (clsHubBE       != null && clsHubBE.isInstance(be))       return java.util.List.of("storage", "inventory", "wireless", "network");
+        if (clsSensorBE    != null && clsSensorBE.isInstance(be))    return java.util.List.of("sensor",  "wireless");
+        if (clsMotorBE     != null && clsMotorBE.isInstance(be))     return java.util.List.of("kinetics","motor", "rotation");
+        if (clsDriveBE     != null && clsDriveBE.isInstance(be))     return java.util.List.of("kinetics","drive", "rotation");
+        if (clsRedstoneBE  != null && clsRedstoneBE.isInstance(be))  return java.util.List.of("redstone","bundled");
+        if (clsTrainCtrlBE != null && clsTrainCtrlBE.isInstance(be)) return java.util.List.of("trains",  "network");
+        return java.util.List.of("wireless");
+    }
+
+    @Override
+    public String getLabel(BlockEntity be) {
+        if (!ensureCache() || mGetHubLabel == null) return null;
+        if (clsHubBE != null && clsHubBE.isInstance(be)) {
+            try {
+                String label = (String) mGetHubLabel.invoke(be);
+                return (label != null && !label.isEmpty()) ? label : null;
+            } catch (Exception ignored) {}
+        }
+        return null;
+    }
+
+    @Override
     public boolean canAdapt(BlockEntity be) {
         if (!ensureCache()) return false;
         return (clsHubBE      != null && clsHubBE.isInstance(be))
@@ -544,6 +580,38 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
             }
         });
 
+        // getInfo() → {linked, networkId, hubLabel, hubRange, itemTypes, totalItems, position}
+        t.set("getInfo", new ZeroArgFunction() {
+            @Override public LuaValue call() {
+                LuaTable info = new LuaTable();
+                info.set("type", LuaValue.valueOf("logiclink"));
+                try { info.set("linked",     LuaValue.valueOf((boolean) mIsLinked.invoke(be))); } catch (Exception ignored) {}
+                try {
+                    Object uuid = mGetNetworkFrequency.invoke(be);
+                    info.set("networkId", uuid != null ? LuaValue.valueOf(uuid.toString()) : LuaValue.valueOf("none"));
+                } catch (Exception ignored) {}
+                try { info.set("hubLabel", LuaValue.valueOf((String) mGetHubLabel.invoke(be))); } catch (Exception ignored) {}
+                try { info.set("hubRange", LuaValue.valueOf((int) mGetHubRange.invoke(be))); } catch (Exception ignored) {}
+                try {
+                    Object summary = mGetNetworkSummary.invoke(be);
+                    if (summary != null) {
+                        List<?> stacks = (List<?>) mGetStacks.invoke(summary);
+                        long total = 0;
+                        for (Object bis : stacks) total += (int) fBisCount.get(bis);
+                        info.set("itemTypes",  LuaValue.valueOf(stacks.size()));
+                        info.set("totalItems", LuaValue.valueOf((double) total));
+                    }
+                } catch (Exception ignored) {}
+                BlockPos pos = be.getBlockPos();
+                LuaTable posT = new LuaTable();
+                posT.set("x", LuaValue.valueOf(pos.getX()));
+                posT.set("y", LuaValue.valueOf(pos.getY()));
+                posT.set("z", LuaValue.valueOf(pos.getZ()));
+                info.set("position", posT);
+                return info;
+            }
+        });
+
         return t;
     }
 
@@ -633,6 +701,41 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
                 if (mSensorGetCachedData == null) return LuaValue.NIL;
                 try { return javaToLua(mSensorGetCachedData.invoke(be)); }
                 catch (Exception e) { return LuaValue.NIL; }
+            }
+        });
+
+        // getInfo() → {linked, networkId, targetPos, position, data}
+        t.set("getInfo", new ZeroArgFunction() {
+            @Override public LuaValue call() {
+                LuaTable info = new LuaTable();
+                info.set("type", LuaValue.valueOf("logicsensor"));
+                if (mSensorIsLinked != null)
+                    try { info.set("linked", LuaValue.valueOf((boolean) mSensorIsLinked.invoke(be))); } catch (Exception ignored) {}
+                if (mSensorGetNetworkFrequency != null)
+                    try {
+                        Object uuid = mSensorGetNetworkFrequency.invoke(be);
+                        info.set("networkId", uuid != null ? LuaValue.valueOf(uuid.toString()) : LuaValue.valueOf("none"));
+                    } catch (Exception ignored) {}
+                if (mSensorGetTargetPos != null)
+                    try {
+                        Object pos = mSensorGetTargetPos.invoke(be);
+                        if (pos instanceof BlockPos bp) {
+                            LuaTable tp = new LuaTable();
+                            tp.set("x", LuaValue.valueOf(bp.getX()));
+                            tp.set("y", LuaValue.valueOf(bp.getY()));
+                            tp.set("z", LuaValue.valueOf(bp.getZ()));
+                            info.set("targetPos", tp);
+                        }
+                    } catch (Exception ignored) {}
+                if (mSensorGetCachedData != null)
+                    try { info.set("data", javaToLua(mSensorGetCachedData.invoke(be))); } catch (Exception ignored) {}
+                BlockPos p = be.getBlockPos();
+                LuaTable posT = new LuaTable();
+                posT.set("x", LuaValue.valueOf(p.getX()));
+                posT.set("y", LuaValue.valueOf(p.getY()));
+                posT.set("z", LuaValue.valueOf(p.getZ()));
+                info.set("position", posT);
+                return info;
             }
         });
 
@@ -1149,6 +1252,23 @@ public class LogicLinkPeripheralAdapter implements IPeripheralAdapter {
                 tbl.set("y", LuaValue.valueOf(pos.getY()));
                 tbl.set("z", LuaValue.valueOf(pos.getZ()));
                 return tbl;
+            }
+        });
+
+        // getInfo() → {channels, position}
+        t.set("getInfo", new ZeroArgFunction() {
+            @Override public LuaValue call() {
+                LuaTable info = new LuaTable();
+                info.set("type", LuaValue.valueOf("redstone_controller"));
+                if (mRedstoneGetChannelList != null)
+                    try { info.set("channels", javaToLua(mRedstoneGetChannelList.invoke(be))); } catch (Exception ignored) {}
+                BlockPos p = be.getBlockPos();
+                LuaTable posT = new LuaTable();
+                posT.set("x", LuaValue.valueOf(p.getX()));
+                posT.set("y", LuaValue.valueOf(p.getY()));
+                posT.set("z", LuaValue.valueOf(p.getZ()));
+                info.set("position", posT);
+                return info;
             }
         });
 

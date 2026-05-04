@@ -1016,6 +1016,16 @@ public class JavaOS {
                         }
                         injectPeripheralMetadata(tbl, bp, adapter, be, side, t);
                         tableSnap.put(bp, tbl);
+                        // Auto-register LogicLink Hubs on the ByteBlock Bluetooth network
+                        // so they appear in bluetooth.getDevices() from any computer.
+                        if ("logiclink".equals(type)) {
+                            // Derive a stable UUID from the block position
+                            java.util.UUID hubId = java.util.UUID.nameUUIDFromBytes(
+                                    (sl.dimension().location() + "@" + bp).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                            com.apocscode.byteblock.network.BluetoothNetwork.register(
+                                    sl, hubId, bp, 1,
+                                    com.apocscode.byteblock.network.BluetoothNetwork.DeviceType.LOGIC_HUB);
+                        }
                         break;
                     }
                 } catch (Exception e) {

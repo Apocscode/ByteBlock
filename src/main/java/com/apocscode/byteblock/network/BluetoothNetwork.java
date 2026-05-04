@@ -32,7 +32,8 @@ public class BluetoothNetwork {
         REDSTONE_RELAY("Redstone Relay", BLOCK_RANGE),
         BUTTON_PANEL("Button Panel", UNLIMITED_RANGE),
         MONITOR("Monitor", BLOCK_RANGE),
-        BYTE_CHEST("ByteChest", BLOCK_RANGE);
+        BYTE_CHEST("ByteChest", BLOCK_RANGE),
+        LOGIC_HUB("Logic Hub", UNLIMITED_RANGE);
 
         private final String displayName;
         private final int range;
