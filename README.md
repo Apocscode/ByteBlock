@@ -15,7 +15,22 @@ An in-game Java computer simulator for Minecraft 1.21.1 (NeoForge 21.1.215, Java
 - Monitor rendering behavior received additional cleanup paths for explicit blank mode transitions.
 
 See `SESSION_LOG.md` and `CHANGELOG.md` for the latest task-by-task updates.
-See `docs/universal-peripheral-spec.md` for the planned unified Lua/peripheral API and mod compatibility targets.
+See `docs/universal-peripheral-spec.md` for the unified Lua/peripheral API and mod compatibility reference.
+
+## Mod Compatibility
+
+ByteBlock exposes every compatible block entity as a Lua peripheral through a universal adapter layer.
+All access is reflective — ByteBlock compiles without any target mod on the classpath.
+
+| Mod | Peripheral types | Key Lua methods |
+|-----|-----------------|-----------------|
+| **Applied Energistics 2** | `me_network` | `list()`, `getItem()`, `requestCraft()`, `getCpus()`, `getEnergyStatus()`, `listFiltered()`, `getStorageInfo()` |
+| **Mekanism** | `mekanism_machine` | `getChemicals()`, `getActive()`, `setActive()`, `getProgress()`, `getRedstoneMode()` |
+| **Create** | `create_machine` (`create_speedometer`, `create_stressometer`, `create_bearing`, `create_deployer`, etc.) | `getSpeed()`, `getStress()`, `rotate()`, `deploy()` |
+| **Create: Storage** | `create_storage` | `list()`, `getItemCount()`, `push()`, `pull()` |
+| **Any block with capabilities** | `generic` | `list()`, `getItem()`, `getFluid()`, `getEnergy()` |
+
+Robot and Drone entities are also exposed as peripherals (`robot_<id>`, `drone_<id>`) and support movement/waypoint commands over Bluetooth.
 
 ByteBlock adds programmable **Computer** blocks with a desktop-style OS, a **Bluetooth**-style wireless
 networking layer, and a small ecosystem of peripheral blocks — scanners, monitors, redstone relays,
