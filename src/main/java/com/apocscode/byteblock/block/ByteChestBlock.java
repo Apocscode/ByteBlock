@@ -71,8 +71,20 @@ public class ByteChestBlock extends Block implements EntityBlock {
                 BlockEntity be = level.getBlockEntity(pos);
                 String current = (be instanceof ByteChestBlockEntity chest) ? chest.getLabel() : "";
                 int tint = (be instanceof ByteChestBlockEntity chest2) ? chest2.getTint() : 0xFFFFFF;
+                boolean pullEnabled = (be instanceof ByteChestBlockEntity chest3) && chest3.isPullEnabled();
+                String pullItemId = (be instanceof ByteChestBlockEntity chest4) ? chest4.getPullItemId() : "";
+                int keepAmount = (be instanceof ByteChestBlockEntity chest5) ? chest5.getKeepAmount() : 0;
+                boolean pushEnabled = (be instanceof ByteChestBlockEntity chest6) && chest6.isPushEnabled();
+                Direction pushSide = (be instanceof ByteChestBlockEntity chest7) ? chest7.getPushSide() : Direction.NORTH;
+                int movePerTick = (be instanceof ByteChestBlockEntity chest8) ? chest8.getMovePerTick() : 64;
+                String[] filterIds = (be instanceof ByteChestBlockEntity chest9)
+                        ? chest9.getPullFilterIds()
+                        : new String[ByteChestBlockEntity.PULL_FILTER_COUNT];
                 net.minecraft.client.Minecraft.getInstance().setScreen(
-                        new com.apocscode.byteblock.client.ByteChestConfigScreen(pos, current, tint));
+                    new com.apocscode.byteblock.client.ByteChestConfigScreen(
+                        pos, current, tint,
+                        pullEnabled, pullItemId, keepAmount,
+                        pushEnabled, pushSide, movePerTick, filterIds));
             }
             return InteractionResult.sidedSuccess(level.isClientSide());
         }

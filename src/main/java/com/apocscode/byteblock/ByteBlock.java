@@ -151,6 +151,11 @@ public class ByteBlock {
             com.apocscode.byteblock.network.PaintByteChestPayload::handle
         );
         registrar.playToServer(
+            com.apocscode.byteblock.network.SetByteChestLogisticsPayload.TYPE,
+            com.apocscode.byteblock.network.SetByteChestLogisticsPayload.STREAM_CODEC,
+            com.apocscode.byteblock.network.SetByteChestLogisticsPayload::handle
+        );
+        registrar.playToServer(
             com.apocscode.byteblock.network.PackUpEntityPayload.TYPE,
             com.apocscode.byteblock.network.PackUpEntityPayload.STREAM_CODEC,
             com.apocscode.byteblock.network.PackUpEntityPayload::handle

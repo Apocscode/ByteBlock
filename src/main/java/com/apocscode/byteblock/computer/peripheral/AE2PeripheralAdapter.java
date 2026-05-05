@@ -928,7 +928,12 @@ public class AE2PeripheralAdapter implements IPeripheralAdapter {
             }
 
             // ── Item extraction ────────────────────────────────────────────
-            clsActionable = safeClass("appeng.api.networking.action.Actionable");
+            // Actionable lives in appeng.api.config (NOT appeng.api.networking.action).
+            clsActionable = safeClass("appeng.api.config.Actionable");
+            if (clsActionable == null) {
+                // Fallback for any future relocation
+                clsActionable = safeClass("appeng.api.networking.action.Actionable");
+            }
             if (clsActionable != null) {
                 try {
                     Object[] vals = (Object[]) clsActionable.getMethod("values").invoke(null);
@@ -1132,15 +1137,39 @@ public class AE2PeripheralAdapter implements IPeripheralAdapter {
      */
     public static int extractToInventoryJava(BlockEntity meNode, String itemName, int requestCount,
             net.minecraft.world.Container inv) {
-        if (!ensureCache() || meNode == null) return 0;
-        if (mMEStorageExtract == null || actionableModulate == null || clsActionSource == null) return 0;
+        return extractToInventoryJavaFromHost(meNode, itemName, requestCount, inv);
+    }
+
+    /**
+     * Same as {@link #extractToInventoryJava(BlockEntity, String, int, net.minecraft.world.Container)}
+     * but accepts any {@code IInWorldGridNodeHost}-implementing object as the network
+     * access point (e.g. a managed-node bridge owned by a non-AE2 block entity).
+     */
+    public static int extractToInventoryJavaFromHost(Object meNodeHost, String itemName, int requestCount,
+            net.minecraft.world.Container inv) {
+        if (!ensureCache() || meNodeHost == null) return 0;
+        if (mMEStorageExtract == null || actionableModulate == null || clsActionSource == null) {
+            org.slf4j.LoggerFactory.getLogger("ByteChest/AE2Extract").warn(
+                "extract refs null: extract={} modulate={} actionSrc={}",
+                mMEStorageExtract != null, actionableModulate != null, clsActionSource != null);
+            return 0;
+        }
         try {
             Item item = lookupItem(itemName);
-            if (item == null) return 0;
+            if (item == null) {
+                org.slf4j.LoggerFactory.getLogger("ByteChest/AE2Extract").warn("item not in registry: {}", itemName);
+                return 0;
+            }
             Object aeKey = itemToAEKey(item);
-            if (aeKey == null) return 0;
-            Object grid = getGrid(meNode);
-            if (grid == null) return 0;
+            if (aeKey == null) {
+                org.slf4j.LoggerFactory.getLogger("ByteChest/AE2Extract").warn("itemToAEKey returned null for {}", itemName);
+                return 0;
+            }
+            Object grid = getGrid(meNodeHost);
+            if (grid == null) {
+                org.slf4j.LoggerFactory.getLogger("ByteChest/AE2Extract").warn("getGrid(host)=null");
+                return 0;
+            }
             Object storage = mGetInventory.invoke(mGetStorageService.invoke(grid));
 
             // Anonymous machine IActionSource
@@ -1156,16 +1185,28 @@ public class AE2PeripheralAdapter implements IPeripheralAdapter {
             long available = (actionableSimulate != null)
                     ? (long) mMEStorageExtract.invoke(storage, aeKey, (long) requestCount, actionableSimulate, src)
                     : (long) requestCount;
-            if (available <= 0) return 0;
+            if (available <= 0) {
+                org.slf4j.LoggerFactory.getLogger("ByteChest/AE2Extract").warn(
+                    "simulate available=0 for {} req={}", itemName, requestCount);
+                return 0;
+            }
 
             // How much will actually fit in the target inventory?
             long space = inventoryFreeSpaceJava(inv, item);
             long toExtract = Math.min(available, Math.min((long) requestCount, space));
-            if (toExtract <= 0) return 0;
+            if (toExtract <= 0) {
+                org.slf4j.LoggerFactory.getLogger("ByteChest/AE2Extract").warn(
+                    "no space in inv for {} avail={} req={} space={}", itemName, available, requestCount, space);
+                return 0;
+            }
 
             // Actually extract from ME network
             long extracted = (long) mMEStorageExtract.invoke(storage, aeKey, toExtract, actionableModulate, src);
-            if (extracted <= 0) return 0;
+            if (extracted <= 0) {
+                org.slf4j.LoggerFactory.getLogger("ByteChest/AE2Extract").warn(
+                    "modulate extract=0 for {} req={} toExtract={}", itemName, requestCount, toExtract);
+                return 0;
+            }
 
             // Build template stack (use AEItemKey.toStack to preserve data components if possible)
             ItemStack template;
@@ -1176,8 +1217,15 @@ public class AE2PeripheralAdapter implements IPeripheralAdapter {
             } catch (Exception ignored) {
                 template = new ItemStack(item, 1);
             }
-            return insertIntoInventoryJava(inv, template, extracted);
+            int inserted = insertIntoInventoryJava(inv, template, extracted);
+            if (inserted == 0) {
+                org.slf4j.LoggerFactory.getLogger("ByteChest/AE2Extract").warn(
+                    "insertIntoInventory returned 0 (extracted={} from AE2 — items may be LOST)", extracted);
+            }
+            return inserted;
         } catch (Exception e) {
+            org.slf4j.LoggerFactory.getLogger("ByteChest/AE2Extract").warn(
+                "extract threw: {}: {}", e.getClass().getSimpleName(), e.getMessage(), e);
             return 0;
         }
     }
@@ -1224,5 +1272,77 @@ public class AE2PeripheralAdapter implements IPeripheralAdapter {
             }
         }
         return transferred;
+    }
+
+    /** Returns true if {@code be} is an AE2 grid node host (cable, controller, interface, etc). */
+    public static boolean isAe2GridHost(Object be) {
+        if (!ensureCache() || be == null) return false;
+        return clsGridNodeHost != null && clsGridNodeHost.isInstance(be);
+    }
+
+    /** Diagnostic dump for a host (bridge or BE). Returns a short human-readable status string. */
+    public static String diagnoseHost(Object host, String itemId) {
+        if (!ensureCache()) return "ae2-cache-unavailable";
+        if (host == null) return "host=null";
+        StringBuilder sb = new StringBuilder();
+        try {
+            // Try every direction to find a populated grid node.
+            Object node = null;
+            String foundDir = null;
+            for (Direction dir : Direction.values()) {
+                Object n = mGetGridNode.invoke(host, dir);
+                if (n != null) { node = n; foundDir = dir.getName(); break; }
+            }
+            sb.append("node=").append(node != null);
+            if (node == null) {
+                sb.append(" grid=null reason=no-grid-node-on-any-side");
+                return sb.toString();
+            }
+            sb.append("(side=").append(foundDir).append(")");
+            Object grid = mGetGrid.invoke(node);
+            sb.append(" grid=").append(grid != null);
+            if (grid == null) {
+                sb.append(" reason=node-not-on-network");
+                return sb.toString();
+            }
+            if (mGridSize != null) {
+                Object size = mGridSize.invoke(grid);
+                sb.append(" size=").append(size);
+            }
+            // Check storage and item availability
+            try {
+                Object storage = mGetInventory.invoke(mGetStorageService.invoke(grid));
+                sb.append(" storage=").append(storage != null);
+                if (itemId != null && storage != null) {
+                    Item item = lookupItem(itemId);
+                    sb.append(" itemFound=").append(item != null);
+                    if (item != null) {
+                        Object aeKey = itemToAEKey(item);
+                        sb.append(" aeKey=").append(aeKey != null);
+                        if (aeKey != null && actionableSimulate != null && mMEStorageExtract != null
+                                && clsActionSource != null) {
+                            Object src = Proxy.newProxyInstance(
+                                    clsActionSource.getClassLoader(), new Class[]{clsActionSource},
+                                    (p, m, a) -> {
+                                        String n = m.getName();
+                                        if ("player".equals(n) || "machine".equals(n)) return Optional.empty();
+                                        return null;
+                                    });
+                            long avail = (long) mMEStorageExtract.invoke(storage, aeKey, 64L, actionableSimulate, src);
+                            sb.append(" available=").append(avail);
+                        } else if (aeKey != null) {
+                            sb.append(" SKIP-simulate(simulate=").append(actionableSimulate != null)
+                              .append(" extract=").append(mMEStorageExtract != null)
+                              .append(" actionSrc=").append(clsActionSource != null).append(")");
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                sb.append(" storageErr=").append(e.getClass().getSimpleName());
+            }
+        } catch (Exception e) {
+            sb.append(" err=").append(e.getClass().getSimpleName()).append(":").append(e.getMessage());
+        }
+        return sb.toString();
     }
 }

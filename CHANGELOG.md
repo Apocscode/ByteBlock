@@ -4,6 +4,34 @@
 
 ### Added
 
+- **ByteChest Logistics tab** — new tab in the sneak-right-click config screen with:
+  - 6 AE2 pull-filter slots with item-id autocomplete suggestions.
+  - `Keep` target stock level and configurable items-per-tick budget.
+  - 6-direction push picker that auto-detects and labels adjacent blocks (parens = no
+    `IItemHandler`).
+  - Player inventory grid display for quick verification.
+- **AE2 grid integration on ByteChest** — `Ae2GridNodeBridge` registers the chest as an
+  `IInWorldGridNodeHost`, so AE2 cables visually connect and the chest can extract items
+  from the ME network directly via its own managed node (no requirement for an adjacent
+  AE2-aware block).
+- **Logistics diagnostic logging** (`ByteChest/Logistics`, `ByteChest/PullDiag`,
+  `ByteChest/AE2Extract`) — reports configuration saves, exact pull/push failure reasons,
+  AE2 cache state, simulated extract availability, and inventory free space every 5 seconds
+  while a transfer is enabled but nothing moves.
+
+### Fixed
+
+- **AE2 reflection cache**: `Actionable` was being looked up at
+  `appeng.api.networking.action.Actionable` (incorrect) instead of
+  `appeng.api.config.Actionable`. The wrong package caused `mMEStorageExtract`,
+  `actionableSimulate`, and `actionableModulate` to all be `null`, silently disabling every
+  AE2 extract path used by ByteChest pull, AE2 peripheral methods, and the Materials
+  Calculator. Now resolves correctly and items pull from the ME network as expected.
+
+## Unreleased (previous)
+
+### Added
+
 - **Universal Peripheral Layer** — full mod support milestone.
   - `IPeripheralAdapter`: universal metadata defaults (`getTypes`, `getCapabilities`, `getLabel`, `getStableId`, `injectUniversalMeta`).
   - New block-entity adapters: `ByteChest`, `ChargingStation`, `Scanner`, `Drive`, `Printer`, `RedstoneRelay`.

@@ -23,8 +23,10 @@ import net.minecraft.world.InteractionResult;
 import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.PathfinderMob;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
@@ -32,6 +34,7 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.material.FluidState;
+import net.minecraft.world.phys.AABB;
 import net.neoforged.neoforge.energy.EnergyStorage;
 
 import java.nio.charset.StandardCharsets;
@@ -112,6 +115,9 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
     private double homingLastX, homingLastZ;
     private int homingStuckTicks = 0;
     private int homingRepathCooldown = 0;
+    // Default auto-defense while idle (suppressed when a Lua program is running).
+    private int autoAttackCooldown = 0;
+    private int autoLaserCooldown = 0;
 
         /** Shield upgrade — absorbs damage until depleted, then recharges over time. */
         private float shieldHP = 0f;
@@ -188,6 +194,7 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
         // Charging state countdown + low-battery homing toward nearest charging station.
         tickChargingState();
         tickLowBatteryHoming();
+        tickAutoDefense();
 
         // Sync energy to clients every 10 ticks (twice per second) — drives nameplate display.
         if (level().getGameTime() % 10 == 0) {
@@ -316,9 +323,14 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
                 cachedChargingPad = null;
             }
         }
-        // Use manually assigned pad if set, else auto-scan.
+        // Use manually assigned pad if set and valid, else auto-scan for a free pad.
         if (chargePad != null) {
-            cachedChargingPad = chargePad;
+            if (isChargingPadBlock(chargePad)) {
+                cachedChargingPad = chargePad;
+            } else {
+                chargePad = null;
+                cachedChargingPad = null;
+            }
         } else if (cachedChargingPad == null && chargingPadScanCooldown <= 0) {
             cachedChargingPad = findNearestChargingPad(32);
             chargingPadScanCooldown = 100;
@@ -428,10 +440,82 @@ public class RobotEntity extends PathfinderMob implements net.minecraft.world.Me
                 for (int dy = -6; dy <= 6; dy++) {
                     BlockPos p = origin.offset(dx, dy, dz);
                     if (level().getBlockState(p).getBlock() instanceof com.apocscode.byteblock.block.ChargingStationBlock) {
+                        if (!isChargingPadAvailable(p)) continue;
                         double d = p.distSqr(origin);
                         if (d < bestDist) { bestDist = d; best = p.immutable(); }
                     }
                 }
+            }
+        }
+        return best;
+    }
+
+    private boolean isChargingPadBlock(BlockPos pos) {
+        return level() != null
+                && level().getBlockState(pos).getBlock() instanceof com.apocscode.byteblock.block.ChargingStationBlock;
+    }
+
+    private boolean isChargingPadAvailable(BlockPos pad) {
+        if (!isChargingPadBlock(pad)) return false;
+        if (chargePad != null && chargePad.equals(pad)) return true;
+        AABB box = new AABB(pad).inflate(0.95);
+        java.util.List<RobotEntity> occupants = level().getEntitiesOfClass(
+                RobotEntity.class, box, r -> r != this && r.isAlive());
+        return occupants.isEmpty();
+    }
+
+    private void tickAutoDefense() {
+        if (level() == null || level().isClientSide()) return;
+
+        boolean programRunning = os != null && os.isProgramRunning();
+        if (programRunning) return;
+
+        if (autoAttackCooldown > 0) autoAttackCooldown--;
+        if (autoLaserCooldown > 0) autoLaserCooldown--;
+
+        ItemStack weapon = pickWeapon();
+        boolean canMelee = !weapon.isEmpty();
+        boolean canLaser = hasLaserUpgrade();
+        if (!canMelee && !canLaser) return;
+
+        LivingEntity hostile = findNearestHostile(canLaser ? 16.0 : 6.0);
+        if (hostile == null) return;
+
+        lookAt(hostile, 30f, 30f);
+
+        if (canLaser && autoLaserCooldown <= 0) {
+            hostile.hurt(damageSources().mobAttack(this), 6.0f);
+            autoLaserCooldown = 10;
+        }
+
+        double dist = distanceTo(hostile);
+        if (canMelee && dist <= 2.1 && autoAttackCooldown <= 0) {
+            float damage = 1.0f;
+            if (weapon.getItem() instanceof net.minecraft.world.item.SwordItem) damage = 4.0f;
+            else if (weapon.getItem() instanceof net.minecraft.world.item.DiggerItem) damage = 2.5f;
+            hostile.hurt(damageSources().mobAttack(this), damage);
+            if (weapon.isDamageableItem()) {
+                weapon.hurtAndBreak(1, (ServerLevel) level(), null, it -> {
+                    if (weapon == equippedTool) equippedTool = ItemStack.EMPTY;
+                    else if (weapon == equippedToolRight) equippedToolRight = ItemStack.EMPTY;
+                });
+            }
+            autoAttackCooldown = 20;
+        } else if (canMelee && dist > 2.1) {
+            getNavigation().moveTo(hostile, 1.0 * getSpeedMultiplier());
+        }
+    }
+
+    private LivingEntity findNearestHostile(double radius) {
+        AABB area = getBoundingBox().inflate(radius);
+        LivingEntity best = null;
+        double bestDist = Double.MAX_VALUE;
+        for (Monster m : level().getEntitiesOfClass(Monster.class, area)) {
+            if (!m.isAlive()) continue;
+            double d = m.distanceToSqr(this);
+            if (d < bestDist) {
+                bestDist = d;
+                best = m;
             }
         }
         return best;

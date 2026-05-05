@@ -291,18 +291,31 @@ computers.
 
 ### ByteChest
 
-A 27-slot Bluetooth-enabled chest with a status LED.
+A 27-slot Bluetooth-enabled chest with a status LED, a tabbed configuration screen, and
+optional **AE2 grid integration** (cables visually connect; items pull/push automatically).
 
 | Property            | Value |
 |---------------------|-------|
 | Block entity        | `ByteChestBlockEntity` |
 | BT device type      | `BYTE_CHEST` (range 15) |
 | Block state         | `FACING` (horizontal, latch faces player), `CONNECTED` |
+| AE2 grid host       | yes (registered as `IInWorldGridNodeHost` via capability) |
 
 - **Right-click** — opens the 27-slot chest menu.
-- **Sneak + right-click** — opens the configuration screen with **Rename** (custom label) and
-  **Paint** (12×4 color palette to tint the chest body) tabs. Tint and label are saved to NBT and
-  persist across save/load.
+- **Sneak + right-click** — opens a tabbed configuration screen:
+  - **Rename** — set a custom label (used by GPS HUD, Lua APIs, BT registry).
+  - **Paint** — 12×4 color palette tints the chest body. Tint persists in NBT and re-tints live.
+  - **Logistics** — configure auto-pull from AE2 and auto-push to a neighbor:
+    - **Pull (AE2)**: up to 6 filter slots (item IDs with autocomplete), a `Keep` target stock
+      level, and an items/tick budget. Each tick the chest queries its own grid node and
+      extracts items from the ME network until the target is reached. Falls back to probing
+      adjacent AE2 hosts if no own-node grid is available.
+    - **Push**: 6-direction picker showing the *detected* adjacent block name (parens around
+      the name = no `IItemHandler` capability). The chest pushes its contents to that side
+      using the configured items/tick budget.
+    - Diagnostic logs (`[ByteChest pull-diag]` / `[ByteChest push-diag]`) fire every 5s
+      while a transfer is enabled but nothing moves, with a precise reason
+      (no grid node, network unpowered, item missing, target full, no item-handler, etc.).
 - **Drop on break** — full inventory drops as items.
 - **LED** — turns blue (`CONNECTED = true`) when a computer is in range.
 
