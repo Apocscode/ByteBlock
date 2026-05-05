@@ -222,7 +222,7 @@ Scans the surrounding world into a persistent block/entity cache that programs c
 
 ### GPS
 
-Place 3+ GPS blocks at known coordinates so computers can triangulate their position.
+GPS blocks act as global beacons on the ByteBlock network.
 
 | Property            | Value |
 |---------------------|-------|
@@ -231,7 +231,10 @@ Place 3+ GPS blocks at known coordinates so computers can triangulate their posi
 | Block state         | `CONNECTED` |
 
 - **Right-click** — chat shows the block's broadcast position.
-- **Triangulation** — programs use 3+ GPS responses to solve their own coordinates.
+- **Placement rules (current implementation)** — no special height needed, no sky access required, and no geometric spacing requirement.
+- **How many you need** — one active GPS block is enough for `gps.locate()` to work right now; placing 3+ does not improve accuracy in the current implementation.
+- **Chunk loading requirement** — GPS blocks must be in loaded chunks to stay registered. If their chunk unloads, they age out of the active GPS registry after ~200 ticks (~10s).
+- **CC comparison** — this is currently *not* CC-style trilateration math; `gps.locate()` returns the computer's registered position when at least one GPS beacon is active.
 
 ### Charging Station
 
