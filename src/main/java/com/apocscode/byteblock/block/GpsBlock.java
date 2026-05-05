@@ -56,4 +56,15 @@ public class GpsBlock extends Block implements EntityBlock {
         }
         return InteractionResult.sidedSuccess(level.isClientSide());
     }
+
+    @Override
+    protected void onRemove(BlockState state, Level level, BlockPos pos, BlockState newState, boolean isMoving) {
+        if (!state.is(newState.getBlock())) {
+            BlockEntity be = level.getBlockEntity(pos);
+            if (be instanceof GpsBlockEntity gpsBe) {
+                gpsBe.releaseChunkTicket();
+            }
+        }
+        super.onRemove(state, level, pos, newState, isMoving);
+    }
 }

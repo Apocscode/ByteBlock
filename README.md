@@ -233,8 +233,31 @@ GPS blocks act as global beacons on the ByteBlock network.
 - **Right-click** — chat shows the block's broadcast position.
 - **Placement rules (current implementation)** — no special height needed, no sky access required, and no geometric spacing requirement.
 - **How many you need** — one active GPS block is enough for `gps.locate()` to work right now; placing 3+ does not improve accuracy in the current implementation.
-- **Chunk loading requirement** — GPS blocks must be in loaded chunks to stay registered. If their chunk unloads, they age out of the active GPS registry after ~200 ticks (~10s).
+- **Chunk loading** — each GPS block now forces its own chunk while placed, so beaconing stays active without an external chunk loader. Breaking/replacing the block releases that chunk ticket.
 - **CC comparison** — this is currently *not* CC-style trilateration math; `gps.locate()` returns the computer's registered position when at least one GPS beacon is active.
+
+Lua snippet (basic locate loop):
+
+```lua
+while true do
+  local x, y, z = gps.locate()
+  if x then
+    print(string.format("GPS: %d, %d, %d", x, y, z))
+  else
+    print("GPS unavailable")
+  end
+  sleep(2)
+end
+```
+
+Example use:
+
+```lua
+local x, y, z = gps.locate()
+if not x then error("No GPS beacon online") end
+print("Home set to:", x, y, z)
+-- Example: feed these coords into your robot/drone home/return logic
+```
 
 ### Charging Station
 

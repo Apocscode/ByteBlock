@@ -7,6 +7,7 @@ import com.apocscode.byteblock.network.BluetoothNetwork;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 
@@ -21,12 +22,15 @@ public class GpsBlockEntity extends BlockEntity {
     private UUID gpsId = UUID.randomUUID();
     private int broadcastInterval = 40; // ticks (2 seconds)
     private int tickCounter = 0;
+    private boolean chunkForced = false;
 
     public GpsBlockEntity(BlockPos pos, BlockState state) {
         super(ModBlockEntities.GPS.get(), pos, state);
     }
 
     public void serverTick() {
+        ensureChunkForced();
+
         // Register on the global GPS network every tick (keeps us alive in cleanup)
         String dim = level.dimension().location().toString();
         BluetoothNetwork.registerGps(gpsId, worldPosition, dim, level.getGameTime());
@@ -51,6 +55,23 @@ public class GpsBlockEntity extends BlockEntity {
         }
     }
 
+    private void ensureChunkForced() {
+        if (chunkForced) return;
+        if (!(level instanceof ServerLevel server)) return;
+        int cx = worldPosition.getX() >> 4;
+        int cz = worldPosition.getZ() >> 4;
+        // Keep this GPS chunk loaded so global beaconing stays active even when no players are nearby.
+        chunkForced = server.setChunkForced(cx, cz, true);
+    }
+
+    public void releaseChunkTicket() {
+        if (!(level instanceof ServerLevel server)) return;
+        int cx = worldPosition.getX() >> 4;
+        int cz = worldPosition.getZ() >> 4;
+        server.setChunkForced(cx, cz, false);
+        chunkForced = false;
+    }
+
     public UUID getGpsId() { return gpsId; }
 
     @Override
@@ -65,5 +86,6 @@ public class GpsBlockEntity extends BlockEntity {
         super.loadAdditional(tag, registries);
         if (tag.contains("GpsId")) gpsId = tag.getUUID("GpsId");
         if (tag.contains("BroadcastInterval")) broadcastInterval = tag.getInt("BroadcastInterval");
+        chunkForced = false;
     }
 }
