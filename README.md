@@ -319,6 +319,41 @@ optional **AE2 grid integration** (cables visually connect; items pull/push auto
 - **Drop on break** — full inventory drops as items.
 - **LED** — turns blue (`CONNECTED = true`) when a computer is in range.
 
+#### Lua peripheral API
+
+`peripheral.wrap("byte_chest_<id>")` returns a table with the standard inventory
+methods plus ByteChest-specific controls. All `set*` methods persist to NBT,
+sync to the client, and reset the diagnostic-log throttle so the next failure
+logs immediately.
+
+| Method | Description |
+|--------|-------------|
+| `getLabel()` / `setLabel(name)` | Read/write the custom display label. |
+| `getTint()` / `setTint(0xRRGGBB)` | Read/write the body tint. |
+| `getLogistics()` | Returns `{pullEnabled, pushEnabled, keep, movePerTick, pushSide, filterCount, filters={...}}`. |
+| `setPullEnabled(bool)` | Enable/disable AE2 auto-pull. |
+| `setPushEnabled(bool)` | Enable/disable auto-push to the configured side. |
+| `setKeep(n)` | Target stock level for each filter (clamped to `>= 0`). |
+| `setMovePerTick(n)` | Items per tick budget (clamped to `1..1024`). |
+| `setPushSide("north"\|"south"\|"east"\|"west"\|"up"\|"down")` | Push direction. |
+| `setPullFilter(slot, "minecraft:oak_log")` | Set a single filter slot (1..6); pass `nil` or `""` to clear. |
+| `setPullFilters({"minecraft:oak_log","minecraft:stone"})` | Replace all 6 filter slots from a Lua array. |
+| `clearPullFilters()` | Clear all 6 filter slots. |
+| `setLogistics({pullEnabled=, pushEnabled=, keep=, movePerTick=, pushSide=, filters={...}})` | Bulk-update any subset of fields in one call. |
+
+```lua
+local c = peripheral.wrap("byte_chest_0")
+c:setLogistics{
+  pullEnabled = true,
+  pushEnabled = true,
+  keep        = 64,
+  movePerTick = 64,
+  pushSide    = "east",
+  filters     = {"minecraft:oak_log", "minecraft:stone"},
+}
+print(textutils.serialize(c:getLogistics()))
+```
+
 ### GPS Tool (item)
 
 Right-click and Shift+Scroll to program drones and robots with waypoints, routes, areas, or paths.

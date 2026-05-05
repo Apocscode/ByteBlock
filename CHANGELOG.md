@@ -10,6 +10,10 @@
   - 6-direction push picker that auto-detects and labels adjacent blocks (parens = no
     `IItemHandler`).
   - Player inventory grid display for quick verification.
+- **ByteChest Lua peripheral methods** — the `byte_chest` peripheral now exposes
+  `getLogistics`, `setLogistics{...}`, `setPullEnabled`, `setPushEnabled`, `setKeep`,
+  `setMovePerTick`, `setPushSide`, `setPullFilter(slot, id)`, `setPullFilters({...})`,
+  and `clearPullFilters` so Lua programs can fully control the Logistics tab at runtime.
 - **AE2 grid integration on ByteChest** — `Ae2GridNodeBridge` registers the chest as an
   `IInWorldGridNodeHost`, so AE2 cables visually connect and the chest can extract items
   from the ME network directly via its own managed node (no requirement for an adjacent

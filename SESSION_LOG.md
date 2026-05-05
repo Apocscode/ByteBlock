@@ -43,3 +43,14 @@
 #### Documentation Updates in This Session
 - `README.md` ByteChest section rewritten to describe the new Logistics tab, AE2 integration, and diagnostic log channels.
 - `CHANGELOG.md` Unreleased section gained a new block describing the Logistics tab, AE2 grid host registration, diagnostic logging, and the `Actionable` reflection-cache fix.
+
+### ByteChest Lua Logistics API
+
+#### Workstream Summary
+- Added Lua-side controls for the Logistics tab on `ByteChestPeripheralAdapter`: `getLogistics`, `setLogistics{...}`, `setPullEnabled`, `setPushEnabled`, `setKeep`, `setMovePerTick`, `setPushSide`, `setPullFilter(slot,id)`, `setPullFilters({...})`, `clearPullFilters`.
+- All setters round-trip through `applyLogisticsConfig(...)` (validation, NBT save, client sync, diag-throttle reset) by snapshotting current state into a `LogiBuf`, mutating it, and re-applying the full record. This guarantees parity with the GUI tab and keeps the legacy single-id mirror in sync.
+- `setPushSide` accepts case-insensitive `north/south/east/west/up/down`.
+
+#### Documentation Updates
+- README ByteChest section grew a `Lua peripheral API` subsection with a method table and a `peripheral.wrap` example.
+- CHANGELOG Unreleased got a new bullet under Added.
