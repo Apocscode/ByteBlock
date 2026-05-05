@@ -337,6 +337,21 @@ Pattern legend: `I`=Iron Ingot, `R`=Redstone, `C`=Computer, `G`=Glass, `T`=Redst
 | `unicycle_robot_spawn_egg` | ` I  / ICI /  W ` | iron + computer + wheat |
 | `drone_spawn_egg` | `FIF / ICI /  R ` | feather + iron + computer + redstone |
 
+### Upgrade Card Recipes
+
+| Item | Pattern | Key ingredients |
+|------|---------|-----------------|
+| `upgrade_speed` | `SRS / GCG /  P ` | sugar + rabbit foot + gold nugget + comparator + paper |
+| `upgrade_range_1` | ` R  / GCG /  P ` | redstone + gold nugget + comparator + paper |
+| `upgrade_range_2` | `EEE / GCG /  P ` | ender pearl + gold ingot + comparator + upgrade_range_1 |
+| `upgrade_range_creative` | shapeless | upgrade_range_2 + nether star + 3x obsidian |
+| `upgrade_inventory` | `CCC / GIG /  P ` | chest + gold nugget + iron ingot + paper |
+| `upgrade_laser` | `BDB / GCG /  P ` | blaze rod + diamond + gold nugget + comparator + paper |
+| `upgrade_shield` | `DGD / GCG /  P ` | diamond + glass + heart of the sea + paper |
+| `upgrade_stealth` | `FIF / GCG /  P ` | fermented spider eye + ink sac + gold nugget + comparator + paper |
+| `upgrade_solar` | `GGG / GCG /  P ` | glass pane + daylight detector + paper |
+| `upgrade_filter` | `HEH / GCG /  P ` | hopper + emerald + gold nugget + comparator + paper |
+
 ## Lua API
 
 ByteBlock ships a Lua 5.2 sandbox (LuaJ) wired to a CC:Tweaked-style event loop
@@ -384,6 +399,10 @@ These have no CC counterpart and expose ByteBlock's hardware:
 | `drone`     | Issue commands to a linked drone entity (route, hover, follow, return) plus `findCharger` / `goHome` to auto-dock at the nearest **Charging Station**. |
 | `glasses`   | Build a HUD widget list (`text`, `box`, `progress`, `image`, `pie`, `compass`, `minimap`, `graph`) **plus** `glasses.canvas()` for true-color free-form 2D rendering at absolute screen coords (`pixel`, `line`, `rect`, `circle`, `triangle`, `poly`, `text`, `gradient`, `bezier`, `image`). |
 | `disk`      | CC-compatible API surface backed by adjacent **Drive** blocks (mount path, label, eject). |
+| `chest`     | ByteChest API for nearby storage operations (list, get, put, pull, push, metadata). |
+| `gps_tool`  | Programmatic access to GPS Tool waypoints, routes, areas, and path sets. |
+| `pathfind`  | Grid/path utilities used by robot and drone movement planning. |
+| `speaker`   | Audio/sound playback helper for in-world feedback from scripts. |
 
 ### Java REPL (BeanShell)
 
