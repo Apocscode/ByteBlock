@@ -425,7 +425,8 @@ public class DesktopProgram extends OSProgram {
         for (int i = windows.size() - 1; i >= 0; i--) {
             Window w = windows.get(i);
             if (w.minimized) continue;
-            if (mx >= w.x && mx < w.x + w.width && my >= w.y && my < w.y + w.height) {
+            boolean hit = mx >= w.x && mx < w.x + w.width && my >= w.y && my < w.y + w.height;
+            if (hit) {
                 // Bring to front
                 windows.remove(i);
                 windows.add(w);

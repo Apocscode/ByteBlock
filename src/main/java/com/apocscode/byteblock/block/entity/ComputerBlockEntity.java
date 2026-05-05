@@ -60,6 +60,8 @@ public class ComputerBlockEntity extends BlockEntity implements IButtonPanel {
     private java.nio.file.Path diskMirrorRoot = null;
     /** True after the first successful pull from disk on load. */
     private boolean diskMirrorInitialized = false;
+    /** True once loadAdditional has initialized the OS from NBT (prevents re-creation on client sync packets). */
+    private boolean osInitialized = false;
 
     private static final String[] COLOR_NAMES = {
         "White", "Orange", "Magenta", "Light Blue", "Yellow", "Lime",
@@ -281,9 +283,6 @@ public class ComputerBlockEntity extends BlockEntity implements IButtonPanel {
         os.setPersistentValue(ME_DASHBOARD_SETTINGS_KEY, compact);
         os.getFileSystem().writeFile(ME_DASHBOARD_SETTINGS_FILE, full);
         os.getFileSystem().writeFile(ME_DASHBOARD_SETTINGS_FILE_FALLBACK, full);
-        com.apocscode.byteblock.ByteBlock.LOGGER.warn(
-            "[ME Dashboard] writeMeDashboardSettings: comp={} compactLen={} fullLen={}",
-            computerId, compact.length(), full.length());
         syncToClient();
     }
 
@@ -454,27 +453,31 @@ public class ComputerBlockEntity extends BlockEntity implements IButtonPanel {
         if (tag.contains("ComputerId")) computerId = tag.getUUID("ComputerId");
         if (tag.contains("Powered")) powered = tag.getBoolean("Powered");
 
-        // Recreate OS with persisted ID
-        os = new JavaOS(computerId);
-        if (tag.contains("Label")) os.setLabel(tag.getString("Label"));
-        if (tag.contains("BluetoothChannel")) os.setBluetoothChannel(tag.getInt("BluetoothChannel"));
-        if (tag.contains("Filesystem", net.minecraft.nbt.Tag.TAG_COMPOUND)) {
-            os.getFileSystem().load(tag.getCompound("Filesystem"));
-            // Re-seed any new default files added in mod updates (idempotent — uses !exists guards)
-            os.installSystemPrograms();
+        // On client-side update packets, preserve the existing OS instance so that
+        // ComputerScreen's reference stays valid. Only update mutable settings.
+        // On the server (or first client load), create a fresh OS from persisted state.
+        boolean clientUpdate = level != null && level.isClientSide() && osInitialized;
+        if (!clientUpdate) {
+            os = new JavaOS(computerId);
+            osInitialized = true;
+            if (tag.contains("Label")) os.setLabel(tag.getString("Label"));
+            if (tag.contains("BluetoothChannel")) os.setBluetoothChannel(tag.getInt("BluetoothChannel"));
+            if (tag.contains("Filesystem", net.minecraft.nbt.Tag.TAG_COMPOUND)) {
+                os.getFileSystem().load(tag.getCompound("Filesystem"));
+                // Re-seed any new default files added in mod updates (idempotent — uses !exists guards)
+                os.installSystemPrograms();
+            }
+            if (tag.contains("PersistentData", net.minecraft.nbt.Tag.TAG_COMPOUND)) {
+                os.loadPersistentData(tag.getCompound("PersistentData"));
+            }
+        } else {
+            // Client sync: update label/channel and persistent data without recreating the OS
+            if (tag.contains("Label")) os.setLabel(tag.getString("Label"));
+            if (tag.contains("BluetoothChannel")) os.setBluetoothChannel(tag.getInt("BluetoothChannel"));
+            if (tag.contains("PersistentData", net.minecraft.nbt.Tag.TAG_COMPOUND)) {
+                os.loadPersistentData(tag.getCompound("PersistentData"));
+            }
         }
-        if (tag.contains("PersistentData", net.minecraft.nbt.Tag.TAG_COMPOUND)) {
-            os.loadPersistentData(tag.getCompound("PersistentData"));
-        }
-        com.apocscode.byteblock.ByteBlock.LOGGER.warn(
-            "[ME Dashboard] loadAdditional: comp={} side={} hasPersistentData={} persistentKeys={}",
-            computerId,
-            (level != null ? (level.isClientSide() ? "client" : "server") : "null"),
-            tag.contains("PersistentData", net.minecraft.nbt.Tag.TAG_COMPOUND),
-            tag.contains("PersistentData", net.minecraft.nbt.Tag.TAG_COMPOUND)
-                ? tag.getCompound("PersistentData").getAllKeys()
-                : java.util.Collections.emptySet());
-
         // Virtual button panel
         if (tag.contains("PanelDeviceId")) panelDeviceId = tag.getUUID("PanelDeviceId");
         if (tag.contains("PanelButtonStates")) buttonStates = tag.getInt("PanelButtonStates") & 0xFFFF;

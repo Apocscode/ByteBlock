@@ -439,9 +439,10 @@ public class MEDashboardProgram extends OSProgram {
     public void handleEvent(OSEvent event) {
         switch (event.getType()) {
             case MOUSE_CLICK -> {
-                int px = event.getInt(1) * PixelBuffer.CELL_W;
-                int py = event.getInt(2) * PixelBuffer.CELL_H;
-                handleClick(px, py);
+                // Ignored: ComputerScreen also pushes MOUSE_CLICK_PX for the same click,
+                // and this UI is pixel-coordinate based. Handling both fired handleClick
+                // twice per click, causing the View toggle to cycle by 2 (e.g. GRID was
+                // unreachable / appeared stuck).
             }
             case MOUSE_CLICK_PX -> {
                 int px = event.getInt(1);
@@ -1552,20 +1553,6 @@ public class MEDashboardProgram extends OSProgram {
         // Keep compact NBT settings in sync even when loading legacy/full formats.
         os.setPersistentValue(SETTINGS_PERSISTENT_KEY, serializeSettings(false));
         writeSettingsToDisk(data);
-        ByteBlock.LOGGER.warn(
-            "[ME Dashboard] loadSettings: source={} comp={} digest={} view={} thresholds={} known={} colors=[{},{},{},{},{},{}]",
-            source,
-            os.getComputerId(),
-            settingsDigest(data),
-            storageView,
-            itemThresholds.size(),
-            knownItems.size(),
-            idxBg,
-            idxRowE,
-            idxRowO,
-            idxText,
-            idxHeader,
-            idxTitle);
         settingsMissingLogged = false;
         settingsHydrated = true;
         return true;
@@ -1591,22 +1578,6 @@ public class MEDashboardProgram extends OSProgram {
             sentPacket = true;
         }
         settingsHydrated = true;
-        ByteBlock.LOGGER.warn(
-            "[ME Dashboard] saveSettings: comp={} digest={} view={} thresholds={} known={} colors=[{},{},{},{},{},{}] sentPacket={} lvlClient={} pos={}",
-            os.getComputerId(),
-                settingsDigest(fullData),
-            storageView,
-            itemThresholds.size(),
-            knownItems.size(),
-            idxBg,
-            idxRowE,
-            idxRowO,
-            idxText,
-            idxHeader,
-            idxTitle,
-            sentPacket,
-            level != null ? level.isClientSide() : null,
-            os.getBlockPos());
     }
 
     @Override
