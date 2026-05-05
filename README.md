@@ -27,6 +27,7 @@ All access is reflective — ByteBlock compiles without any target mod on the cl
 | **Applied Energistics 2** | `me_network` | `list()`, `getItem()`, `requestCraft()`, `getCpus()`, `getEnergyStatus()`, `listFiltered()`, `getStorageInfo()` |
 | **Mekanism** | `mekanism_machine` | `getChemicals()`, `getActive()`, `setActive()`, `getProgress()`, `getRedstoneMode()` |
 | **Create** | `create_machine` (`create_speedometer`, `create_stressometer`, `create_bearing`, `create_deployer`, etc.) | `getSpeed()`, `getStress()`, `rotate()`, `deploy()` |
+| **Create: Logic Link** | `logiclink`, `logicsensor`, `creative_logic_motor`, `logic_drive`, `redstone_controller`, `train_controller` | `list()`, `getNetworkInfo()`, `requestItem()`, `setRemoteSpeed()`, `setRemoteRedstoneOutput()`, `getTrains()` |
 | **Create: Storage** | `create_storage` | `list()`, `getItemCount()`, `push()`, `pull()` |
 | **Any block with capabilities** | `generic` | `list()`, `getItem()`, `getFluid()`, `getEnergy()` |
 
